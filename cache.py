@@ -11,7 +11,7 @@ from utils import json_load, json_save
 from constants import URLType, CACHE_PATH, CACHE_DB
 
 from PIL import Image as Image_module
-from PIL.ImageTk import PhotoImage
+from PySide6.QtGui import QPixmap, QImage
 
 
 if TYPE_CHECKING:
@@ -33,11 +33,22 @@ Hashes = Dict[URLType, ExpiringHash]
 default_database: Hashes = {}
 
 
+def _pil_to_qpixmap(image: Image) -> QPixmap:
+    """Convert a PIL Image to a QPixmap.
+
+    Note: QImage(data, ...) does NOT copy the buffer, so we must call .copy()
+    to force a deep copy before the Python bytes object is garbage collected.
+    """
+    img = image.convert("RGBA")
+    data = img.tobytes("raw", "RGBA")
+    qimg = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888).copy()
+    return QPixmap.fromImage(qimg)
+
+
 class ImageCache:
     LIFETIME = timedelta(days=7)
 
     def __init__(self, manager: GUIManager) -> None:
-        self._root = manager._root
         self._twitch = manager._twitch
         cleanup: bool = False
         CACHE_PATH.mkdir(parents=True, exist_ok=True)
@@ -49,7 +60,7 @@ class ImageCache:
             cleanup = True
             self._hashes = default_database.copy()
         self._images: dict[ImageHash, Image] = {}
-        self._photos: dict[tuple[ImageHash, ImageSize], PhotoImage] = {}
+        self._photos: dict[tuple[ImageHash, ImageSize], QPixmap] = {}
         self._lock = asyncio.Lock()
         self._altered: bool = False
         # cleanup the URLs
@@ -92,7 +103,7 @@ class ImageCache:
         bits = ''.join('1' if px >= avg_pixel else '0' for px in pixel_data)
         return ImageHash(f"{int(bits, 2):x}.png")
 
-    async def get(self, url: URLType, size: ImageSize | None = None) -> PhotoImage:
+    async def get(self, url: URLType, size: ImageSize | None = None) -> QPixmap:
         async with self._lock:
             image: Image | None = None
             if url in self._hashes:
@@ -132,5 +143,5 @@ class ImageCache:
             return self._photos[photo_key]
         if image.size != size:
             image = image.resize(size, Image_module.Palette.ADAPTIVE)
-        self._photos[photo_key] = photo = PhotoImage(master=self._root, image=image)
+        self._photos[photo_key] = photo = _pil_to_qpixmap(image)
         return photo

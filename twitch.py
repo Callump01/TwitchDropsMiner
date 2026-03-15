@@ -56,7 +56,7 @@ from constants import (
 
 if TYPE_CHECKING:
     from utils import Game
-    from gui import LoginForm
+    from gui.widgets.login_card import LoginCard as LoginForm
     from channel import Stream
     from settings import Settings
     from inventory import TimedDrop

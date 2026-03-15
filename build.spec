@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sys
-import platform
 import fnmatch
 from pathlib import Path
 from collections import abc
@@ -28,7 +27,7 @@ PYZTypeEXE: TypeAlias = "abc.Iterable[_TOCTuple] | PYZ | Splash"
 
 # Simple configuration
 upx: bool = False  # Use UPX compression (reduces file size, may increase AV detections)
-console: bool = False  # True if you'd want to add a console window (useful for debugging)
+console: bool = True  # True if you'd want to add a console window (useful for debugging)
 one_dir: bool = False  # True for one-dir, False for one-file
 optimize: int | None = None  # -1/None/0=none, 1=remove asserts, 2=also remove docstrings
 app_name: str = "Twitch Drops Miner (by DevilXD)"
@@ -61,35 +60,39 @@ for source_path, dest_path, required in to_add:
 hooksconfig: dict[str, Any] = {}
 binaries: list[tuple[Path, str]] = []
 hiddenimports: list[str] = [
-    "PIL._tkinter_finder",
     "setuptools._distutils.log",
     "setuptools._distutils.dir_util",
     "setuptools._distutils.file_util",
     "setuptools._distutils.archive_util",
+    # PySide6 core modules
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
+    # async bridge
+    "qasync",
+    # gui package modules (ensure PyInstaller collects them)
+    "gui",
+    "gui.manager",
+    "gui.theme",
+    "gui.animations",
+    "gui.tray",
+    "gui.widgets",
+    "gui.widgets.toggle_switch",
+    "gui.widgets.animated_card",
+    "gui.widgets.placeholder_input",
+    "gui.widgets.nav_sidebar",
+    "gui.widgets.status_card",
+    "gui.widgets.login_card",
+    "gui.widgets.websocket_panel",
+    "gui.widgets.progress_card",
+    "gui.widgets.console_output",
+    "gui.widgets.channel_table",
+    "gui.tabs",
+    "gui.tabs.main_tab",
+    "gui.tabs.inventory_tab",
+    "gui.tabs.settings_tab",
+    "gui.tabs.help_tab",
 ]
-
-if sys.platform == "linux":
-    # Needed files for better system tray support on Linux via pystray (AppIndicator backend).
-    arch: str = platform.machine()
-    libraries_path: Path = Path(f"/usr/lib/{arch}-linux-gnu")
-    if not libraries_path.exists():
-        libraries_path = Path("/usr/lib64")
-    datas.append(
-        (libraries_path / "girepository-1.0/AyatanaAppIndicator3-0.1.typelib", "gi_typelibs")
-    )
-    binaries.append((libraries_path / "libayatana-appindicator3.so.1", "."))
-
-    hiddenimports.extend([
-        "gi.repository.Gtk",
-        "gi.repository.GObject",
-    ])
-    hooksconfig = {
-        "gi": {
-            "icons": [],
-            "themes": [],
-            "languages": ["en_US"]
-        }
-    }
 
 a = Analysis(
     ["main.py"],
