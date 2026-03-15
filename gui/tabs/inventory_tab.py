@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 from gui.widgets.animated_card import AnimatedCard
 from gui.widgets.toggle_switch import ToggleSwitch
-from gui.animations import fade_in
+from gui.animations import fade_in, fade_out
 from translate import _
 from constants import PriorityMode
 
@@ -337,6 +337,18 @@ class InventoryTab(QWidget):
         label = self._drop_labels.get(drop.id)
         if label is not None:
             self._update_progress(drop, label)
+
+    def remove_campaign(self, campaign) -> None:
+        """Remove a specific campaign card from the inventory display."""
+        card = self._campaigns.pop(campaign, None)
+        if card is not None:
+            # Clean up drop label references
+            for drop in campaign.drops:
+                self._drop_labels.pop(drop.id, None)
+            # Animate out and remove
+            fade_out(card, duration=200)
+            card.setParent(None)
+            card.deleteLater()
 
     def clear(self) -> None:
         # Remove all campaign cards

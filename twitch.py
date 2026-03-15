@@ -19,7 +19,7 @@ from translate import _
 from gui import GUIManager
 from channel import Channel
 from websocket import WebsocketPool
-from inventory import DropsCampaign
+from inventory import DropsCampaign, InventoryDiff
 from exceptions import (
     ExitRequest,
     GQLException,
@@ -48,6 +48,8 @@ from constants import (
     MAX_CHANNELS,
     GQL_OPERATIONS,
     WATCH_INTERVAL,
+    RELOAD_INTERVAL,
+    FULL_SYNC_INTERVAL,
     State,
     ClientType,
     PriorityMode,
@@ -449,6 +451,7 @@ class Twitch:
         self.websocket = WebsocketPool(self)
         # Maintenance task
         self._mnt_task: asyncio.Task[None] | None = None
+        self._reload_counter: int = 0
 
     async def get_session(self) -> aiohttp.ClientSession:
         if (session := self._session) is not None:
@@ -618,7 +621,6 @@ class Twitch:
                 "User", "Notifications", auth_state.user_id, self.process_notifications
             ),
         ])
-        full_cleanup: bool = False
         channels: Final[OrderedDict[int, Channel]] = self.channels
         self.change_state(State.INVENTORY_FETCH)
         while True:
@@ -639,22 +641,22 @@ class Twitch:
                 self.gui.set_games(set(campaign.game for campaign in self.inventory))
                 # Save state on every inventory fetch
                 self.save()
-                self.change_state(State.GAMES_UPDATE)
-            elif self._state is State.GAMES_UPDATE:
-                # claim drops from expired and active campaigns
+                self.change_state(State.CHANNELS_UPDATE)
+            elif self._state is State.CHANNELS_UPDATE:
+                # --- Part 1: Claim claimable drops ---
                 for campaign in self.inventory:
                     if not campaign.upcoming:
                         for drop in campaign.drops:
                             if drop.can_claim:
                                 await drop.claim()
-                # figure out which games we want
+                # --- Part 2: Compute wanted_games ---
+                self.gui.status.update(_("gui", "status", "cleanup"))
                 self.wanted_games.clear()
                 exclude = self.settings.exclude
                 priority = self.settings.priority
                 priority_mode = self.settings.priority_mode
                 priority_only = priority_mode is PriorityMode.PRIORITY_ONLY
                 next_hour = datetime.now(timezone.utc) + timedelta(hours=1)
-                # sorted_campaigns: list[DropsCampaign] = list(self.inventory)
                 sorted_campaigns: list[DropsCampaign] = self.inventory
                 if not priority_only:
                     if priority_mode is PriorityMode.ENDING_SOONEST:
@@ -678,98 +680,56 @@ class Twitch:
                     ):
                         # non-excluded games with no priority are placed last, below priority ones
                         self.wanted_games.append(game)
-                full_cleanup = True
-                self.restart_watching()
-                self.change_state(State.CHANNELS_CLEANUP)
-            elif self._state is State.CHANNELS_CLEANUP:
-                self.gui.status.update(_("gui", "status", "cleanup"))
-                if not self.wanted_games or full_cleanup:
-                    # no games selected or we're doing full cleanup: remove everything
-                    to_remove_channels: list[Channel] = list(channels.values())
-                else:
-                    # remove all channels that:
-                    to_remove_channels = [
-                        channel
-                        for channel in channels.values()
-                        if (
-                            not channel.acl_based  # aren't ACL-based
-                            and (
-                                channel.offline  # and are offline
-                                # or online but aren't streaming the game we want anymore
-                                or (channel.game is None or channel.game not in self.wanted_games)
-                            )
-                        )
-                    ]
-                full_cleanup = False
-                if to_remove_channels:
-                    to_remove_topics: list[str] = []
-                    for channel in to_remove_channels:
-                        to_remove_topics.append(
-                            WebsocketTopic.as_str("Channel", "StreamState", channel.id)
-                        )
-                        to_remove_topics.append(
-                            WebsocketTopic.as_str("Channel", "StreamUpdate", channel.id)
-                        )
-                    self.websocket.remove_topics(to_remove_topics)
-                    for channel in to_remove_channels:
-                        del channels[channel.id]
-                        channel.remove()
-                    del to_remove_channels, to_remove_topics
-                if self.wanted_games:
-                    self.change_state(State.CHANNELS_FETCH)
-                else:
-                    # with no games available, we switch to IDLE after cleanup
+                if not self.wanted_games:
+                    # with no games available, switch to IDLE
                     self.print(_("status", "no_campaign"))
                     self.change_state(State.IDLE)
-            elif self._state is State.CHANNELS_FETCH:
+                    continue
+                # --- Part 3: Compute needed channels ---
                 self.gui.status.update(_("gui", "status", "gathering"))
-                # start with all current channels, clear the memory and GUI
-                new_channels: set[Channel] = set(channels.values())
-                channels.clear()
-                self.gui.channels.clear()
-                # gather and add ACL channels from campaigns
-                # NOTE: we consider only campaigns that can be progressed
-                # NOTE: we use another set so that we can set them online separately
+                needed_channels: set[Channel] = set()
                 no_acl: set[Game] = set()
-                acl_channels: set[Channel] = set()
-                next_hour = datetime.now(timezone.utc) + timedelta(hours=1)
                 for campaign in self.inventory:
                     if (
                         campaign.game in self.wanted_games
                         and campaign.can_earn_within(next_hour)
                     ):
                         if campaign.allowed_channels:
-                            acl_channels.update(campaign.allowed_channels)
+                            needed_channels.update(campaign.allowed_channels)
                         else:
                             no_acl.add(campaign.game)
-                # remove all ACL channels that already exist from the other set
-                acl_channels.difference_update(new_channels)
-                # use the other set to set them online if possible
-                await self.bulk_check_online(acl_channels)
-                # finally, add them as new channels
-                new_channels.update(acl_channels)
+                # --- Part 4: Only check NEW ACL channels (key optimization) ---
+                # Separate ACL channels into already-tracked vs genuinely new
+                current_set: set[Channel] = set(channels.values())
+                new_acl: set[Channel] = needed_channels - current_set
+                if new_acl:
+                    await self.bulk_check_online(new_acl)
+                # Use existing Channel objects where available (preserves stream state)
+                resolved_channels: set[Channel] = set()
+                for ch in needed_channels:
+                    existing = channels.get(ch.id)
+                    resolved_channels.add(existing if existing is not None else ch)
+                needed_channels = resolved_channels
+                # --- Part 5: Fetch directory for non-ACL games ---
                 for game in no_acl:
-                    # for every campaign without an ACL, for it's game,
-                    # add a list of live channels with drops enabled
-                    new_channels.update(await self.get_live_streams(game, drops_enabled=True))
-                # sort them descending by viewers, by priority and by game priority
-                # NOTE: Viewers sort also ensures ONLINE channels are sorted to the top
-                # NOTE: We can drop using the set now, because there's no more channels being added
+                    needed_channels.update(
+                        await self.get_live_streams(game, drops_enabled=True)
+                    )
+                # --- Part 6: Sort, trim, diff ---
                 ordered_channels: list[Channel] = sorted(
-                    new_channels, key=self._viewers_key, reverse=True
+                    needed_channels, key=self._viewers_key, reverse=True
                 )
                 ordered_channels.sort(key=lambda ch: ch.acl_based, reverse=True)
                 ordered_channels.sort(key=self.get_priority)
-                # ensure that we won't end up with more channels than we can handle
-                # NOTE: we trim from the end because that's where the non-priority,
-                # offline (or online but low viewers) channels end up
-                to_remove_channels = ordered_channels[MAX_CHANNELS:]
                 ordered_channels = ordered_channels[:MAX_CHANNELS]
-                if to_remove_channels:
-                    # tracked channels and gui were cleared earlier, so no need to do it here
-                    # just make sure to unsubscribe from their topics
-                    to_remove_topics = []
-                    for channel in to_remove_channels:
+                trimmed_set: set[Channel] = set(ordered_channels)
+                to_add: set[Channel] = trimmed_set - current_set
+                to_remove: set[Channel] = current_set - trimmed_set
+                # --- Part 7: Apply channel diff ---
+                # Unsubscribe and remove channels that are no longer needed
+                if to_remove:
+                    to_remove_topics: list[str] = []
+                    for channel in to_remove:
                         to_remove_topics.append(
                             WebsocketTopic.as_str("Channel", "StreamState", channel.id)
                         )
@@ -777,40 +737,35 @@ class Twitch:
                             WebsocketTopic.as_str("Channel", "StreamUpdate", channel.id)
                         )
                     self.websocket.remove_topics(to_remove_topics)
-                    del to_remove_channels, to_remove_topics
-                # set our new channel list
-                for channel in ordered_channels:
-                    channels[channel.id] = channel
-                    channel.display(add=True)
-                # subscribe to these channel's state updates
-                to_add_topics: list[WebsocketTopic] = []
-                for channel_id in channels:
-                    to_add_topics.append(
-                        WebsocketTopic(
-                            "Channel", "StreamState", channel_id, self.process_stream_state
+                    for channel in to_remove:
+                        del channels[channel.id]
+                        channel.remove()
+                # Subscribe and add genuinely new channels
+                if to_add:
+                    to_add_topics: list[WebsocketTopic] = []
+                    for channel in to_add:
+                        channels[channel.id] = channel
+                        channel.display(add=True)
+                        to_add_topics.append(
+                            WebsocketTopic(
+                                "Channel", "StreamState", channel.id,
+                                self.process_stream_state,
+                            )
                         )
-                    )
-                    to_add_topics.append(
-                        WebsocketTopic(
-                            "Channel", "StreamUpdate", channel_id, self.process_stream_update
+                        to_add_topics.append(
+                            WebsocketTopic(
+                                "Channel", "StreamUpdate", channel.id,
+                                self.process_stream_update,
+                            )
                         )
-                    )
-                self.websocket.add_topics(to_add_topics)
-                # relink watching channel after cleanup,
-                # or stop watching it if it no longer qualifies
-                # NOTE: this replaces 'self.watching_channel's internal value with the new object
+                    self.websocket.add_topics(to_add_topics)
+                # --- Part 8: Check watching channel ---
                 watching_channel = self.watching_channel.get_with_default(None)
-                if watching_channel is not None:
-                    new_watching: Channel | None = channels.get(watching_channel.id)
-                    if new_watching is not None and self.can_watch(new_watching):
-                        self.watch(new_watching, update_status=False)
-                    else:
-                        # we've removed a channel we were watching
-                        self.stop_watching()
-                    del new_watching
+                if watching_channel is not None and watching_channel.id not in channels:
+                    # watching channel was removed from the tracked set
+                    self.stop_watching()
                 # pre-display the active drop with a substracted minute
                 for channel in channels.values():
-                    # check if there's any channels we can watch first
                     if self.can_watch(channel):
                         if (
                             (active_campaign := self.get_active_campaign(channel)) is not None
@@ -818,13 +773,17 @@ class Twitch:
                         ):
                             active_drop.display(countdown=False, subone=True)
                         break
+                self.restart_watching()
                 self.change_state(State.CHANNEL_SWITCH)
                 del (
                     no_acl,
-                    acl_channels,
-                    new_channels,
-                    to_add_topics,
+                    needed_channels,
+                    resolved_channels,
                     ordered_channels,
+                    current_set,
+                    trimmed_set,
+                    to_add,
+                    to_remove,
                     watching_channel,
                 )
             elif self._state is State.CHANNEL_SWITCH:
@@ -948,7 +907,7 @@ class Twitch:
     @task_wrapper(critical=True)
     async def _maintenance_task(self) -> None:
         now = datetime.now(timezone.utc)
-        next_period = now + timedelta(hours=1)
+        next_period = now + RELOAD_INTERVAL
         while True:
             # exit if there's no need to repeat the loop
             now = datetime.now(timezone.utc)
@@ -971,9 +930,10 @@ class Twitch:
             if now >= next_period:
                 break
             if next_trigger != next_period:
-                logger.log(CALL, "Maintenance task requests channels cleanup")
-                self.change_state(State.CHANNELS_CLEANUP)
-        # this triggers a restart of this task every (up to) 60 minutes
+                # Mid-interval trigger (campaign start/end time)
+                logger.log(CALL, "Maintenance task requests channels update")
+                self.change_state(State.CHANNELS_UPDATE)
+        # This triggers a restart of this task every reload interval
         logger.log(CALL, "Maintenance task requests a reload")
         self.change_state(State.INVENTORY_FETCH)
 
@@ -1395,10 +1355,22 @@ class Twitch:
         }
         return self._merge_data(campaign_ids, fetched_data)
 
-    async def fetch_inventory(self) -> None:
+    async def fetch_inventory(self) -> InventoryDiff:
+        """
+        Two-tier fetch: Quick checks (most reloads) only call Inventory + Campaigns GQL
+        and update existing campaign objects in-place. Full syncs (every FULL_SYNC_INTERVAL
+        reloads) additionally fetch CampaignDetails for all campaigns to catch rare changes
+        like ACL modifications or new drops being added to existing campaigns.
+        """
         status_update = self.gui.status.update
         status_update(_("gui", "status", "fetching_inventory"))
-        # fetch in-progress campaigns (inventory)
+        self._reload_counter += 1
+        is_full_sync = (
+            self._reload_counter % FULL_SYNC_INTERVAL == 0
+            or not self._campaigns  # first load is always a full sync
+        )
+
+        # === Step 1: Inventory GQL (1 call) - progress data for in-progress campaigns ===
         response = await self.gql_request(GQL_OPERATIONS["Inventory"])
         inventory: JsonType = response["data"]["currentUser"]["inventory"]
         ongoing_campaigns: list[JsonType] = inventory["dropCampaignsInProgress"] or []
@@ -1407,116 +1379,202 @@ class Twitch:
             b["id"]: timestamp(b["lastAwardedAt"]) for b in inventory["gameEventDrops"]
         }
         inventory_data: dict[str, JsonType] = {c["id"]: c for c in ongoing_campaigns}
-        # fetch general available campaigns data (campaigns)
+
+        # === Step 2: Campaigns GQL (1 call) - all active/upcoming campaign metadata ===
         response = await self.gql_request(GQL_OPERATIONS["Campaigns"])
         available_list: list[JsonType] = response["data"]["currentUser"]["dropCampaigns"] or []
         applicable_statuses = ("ACTIVE", "UPCOMING")
         available_campaigns: dict[str, JsonType] = {
             c["id"]: c
             for c in available_list
-            if c["status"] in applicable_statuses  # that are currently not expired
+            if c["status"] in applicable_statuses
         }
-        # fetch detailed data for each campaign, in chunks
-        status_update(_("gui", "status", "fetching_campaigns"))
-        fetch_campaigns_tasks: list[asyncio.Task[Any]] = [
-            asyncio.create_task(self.fetch_campaigns(campaigns_chunk))
-            for campaigns_chunk in chunk(available_campaigns.items(), 20)
-        ]
-        try:
-            for coro in asyncio.as_completed(fetch_campaigns_tasks):
-                chunk_campaigns_data = await coro
-                # merge the inventory and campaigns datas together
-                inventory_data = self._merge_data(inventory_data, chunk_campaigns_data)
-        except Exception:
-            # asyncio.as_completed doesn't cancel tasks on errors
-            for task in fetch_campaigns_tasks:
-                task.cancel()
-            raise
-        # filter out invalid campaigns
-        for campaign_id in list(inventory_data.keys()):
-            if inventory_data[campaign_id]["game"] is None:
-                del inventory_data[campaign_id]
 
-        if self.settings.dump:
-            # dump the campaigns data to the dump file
+        # === Step 3: Determine which campaigns need CampaignDetails ===
+        # all_api_ids: campaigns that exist in the API (either in-progress or available)
+        all_api_ids: set[str] = set(inventory_data.keys()) | set(available_campaigns.keys())
+        existing_ids: set[str] = set(self._campaigns.keys())
+        new_ids: set[str] = all_api_ids - existing_ids
+        removed_ids: set[str] = existing_ids - all_api_ids
+
+        if is_full_sync:
+            # Full sync: fetch CampaignDetails for ALL available campaigns
+            ids_needing_details = set(available_campaigns.keys())
+            logger.log(CALL, "Full sync: fetching details for all campaigns")
+        else:
+            # Quick check: only fetch CampaignDetails for NEW campaigns
+            ids_needing_details = new_ids & set(available_campaigns.keys())
+            if ids_needing_details:
+                logger.log(
+                    CALL,
+                    f"Quick check: fetching details for {len(ids_needing_details)} new campaign(s)"
+                )
+
+        # === Step 4: Fetch CampaignDetails only for campaigns that need it ===
+        if ids_needing_details:
+            status_update(_("gui", "status", "fetching_campaigns"))
+            campaigns_to_fetch: dict[str, JsonType] = {
+                cid: available_campaigns[cid]
+                for cid in ids_needing_details
+                if cid in available_campaigns
+            }
+            fetch_campaigns_tasks: list[asyncio.Task[Any]] = [
+                asyncio.create_task(self.fetch_campaigns(campaigns_chunk))
+                for campaigns_chunk in chunk(campaigns_to_fetch.items(), 20)
+            ]
+            try:
+                for coro in asyncio.as_completed(fetch_campaigns_tasks):
+                    chunk_campaigns_data = await coro
+                    # merge the inventory and campaigns datas together
+                    inventory_data = self._merge_data(inventory_data, chunk_campaigns_data)
+            except Exception:
+                for task in fetch_campaigns_tasks:
+                    task.cancel()
+                raise
+
+        # filter out invalid campaigns (game is None)
+        for campaign_id in list(inventory_data.keys()):
+            if (
+                campaign_id in inventory_data
+                and inventory_data[campaign_id].get("game") is None
+            ):
+                del inventory_data[campaign_id]
+                all_api_ids.discard(campaign_id)
+
+        # === Step 5: Dump data if enabled ===
+        if self.settings.dump and ids_needing_details:
             with open(DUMP_PATH, 'a', encoding="utf8") as file:
-                # we need to pre-process the inventory dump a little
                 dump_data: JsonType = deepcopy(inventory_data)
                 for campaign_data in dump_data.values():
-                    # replace ACL lists with a simple text description
                     if (
-                        campaign_data["allow"]
+                        campaign_data.get("allow")
                         and campaign_data["allow"].get("isEnabled", True)
-                        and campaign_data["allow"]["channels"]
+                        and campaign_data["allow"].get("channels")
                     ):
-                        # simply count the channels included in the ACL
                         campaign_data["allow"]["channels"] = (
                             f"{len(campaign_data['allow']['channels'])} channels"
                         )
-                    # replace drop instance IDs, so they don't include user IDs
-                    for drop_data in campaign_data["timeBasedDrops"]:
+                    for drop_data in campaign_data.get("timeBasedDrops", []):
                         if "self" in drop_data and drop_data["self"]["dropInstanceID"]:
                             drop_data["self"]["dropInstanceID"] = "..."
                 json.dump(dump_data, file, indent=4, sort_keys=True)
-                file.write("\n\n")  # add 2x new line spacer
-                json.dump(inventory["gameEventDrops"], file, indent=4, sort_keys=True, default=str)
+                file.write("\n\n")
+                json.dump(
+                    inventory["gameEventDrops"], file, indent=4, sort_keys=True, default=str
+                )
 
-        # use the merged data to create campaign objects
-        campaigns: list[DropsCampaign] = [
-            DropsCampaign(self, campaign_data, claimed_benefits)
-            for campaign_data in inventory_data.values()
-        ]
-        campaigns.sort(key=lambda c: c.active, reverse=True)
-        campaigns.sort(key=lambda c: c.upcoming and c.starts_at or c.ends_at)
-        campaigns.sort(key=lambda c: c.eligible, reverse=True)
+        # === Step 6: Build the diff ===
+        diff = InventoryDiff()
 
-        self._drops.clear()
-        self.gui.inv.clear()
-        self.inventory.clear()
+        # Process removed campaigns
+        for cid in removed_ids:
+            campaign = self._campaigns.pop(cid)
+            diff.removed.append(campaign)
+
+        # Process existing campaigns
+        for cid in all_api_ids & existing_ids:
+            campaign = self._campaigns[cid]
+            if is_full_sync and cid in inventory_data and "timeBasedDrops" in inventory_data[cid]:
+                # Full sync: update from complete merged data
+                if campaign.update_from_data(inventory_data[cid], claimed_benefits):
+                    diff.updated.append(campaign)
+                else:
+                    diff.unchanged.append(campaign)
+            else:
+                # Quick check: update progress + metadata separately
+                changed = False
+                if cid in inventory_data:
+                    changed = campaign.update_progress(
+                        inventory_data[cid], claimed_benefits
+                    )
+                if cid in available_campaigns:
+                    changed = campaign.update_metadata(
+                        available_campaigns[cid]
+                    ) or changed
+                if changed:
+                    diff.updated.append(campaign)
+                else:
+                    diff.unchanged.append(campaign)
+
+        # Process new campaigns (need full merged data from CampaignDetails)
+        for cid in new_ids:
+            merged = inventory_data.get(cid)
+            if merged is not None and merged.get("game") is not None:
+                campaign = DropsCampaign(self, merged, claimed_benefits)
+                self._campaigns[campaign.id] = campaign
+                diff.added.append(campaign)
+
+        # === Step 7: Rebuild derived structures (cheap - just references) ===
+        self._drops = {
+            drop.id: drop
+            for campaign in self._campaigns.values()
+            for drop in campaign.drops
+        }
+        self.inventory = list(self._campaigns.values())
+        self.inventory.sort(key=lambda c: c.active, reverse=True)
+        self.inventory.sort(key=lambda c: c.upcoming and c.starts_at or c.ends_at)
+        self.inventory.sort(key=lambda c: c.eligible, reverse=True)
+
+        # === Step 8: Incremental GUI updates ===
+        # Remove cards for deleted campaigns
+        for campaign in diff.removed:
+            self.gui.inv.remove_campaign(campaign)
+        # Add cards for new campaigns (fetches images from CDN)
+        if diff.added:
+            status_update(
+                _("gui", "status", "adding_campaigns").format(
+                    counter=f"(0/{len(diff.added)})"
+                )
+            )
+            add_campaign_tasks: list[asyncio.Task[None]] = [
+                asyncio.create_task(self.gui.inv.add_campaign(campaign))
+                for campaign in diff.added
+            ]
+            try:
+                for i, coro in enumerate(asyncio.as_completed(add_campaign_tasks), start=1):
+                    await coro
+                    status_update(
+                        _("gui", "status", "adding_campaigns").format(
+                            counter=f"({i}/{len(diff.added)})"
+                        )
+                    )
+                    if self.gui.close_requested:
+                        raise ExitRequest()
+            except Exception:
+                for task in add_campaign_tasks:
+                    task.cancel()
+                raise
+        # Refresh status/progress labels for updated campaigns
+        if diff.updated:
+            self.gui.inv.refresh()
+
+        # === Step 9: Recompute maintenance triggers and restart task ===
         self._mnt_triggers.clear()
         switch_triggers: set[datetime] = set()
         next_hour = datetime.now(timezone.utc) + timedelta(hours=1)
-        # add the campaigns to the internal inventory
-        for campaign in campaigns:
-            self._drops.update({drop.id: drop for drop in campaign.drops})
+        for campaign in self._campaigns.values():
             if campaign.can_earn_within(next_hour):
                 switch_triggers.update(campaign.time_triggers)
-            self.inventory.append(campaign)
-            self._campaigns[campaign.id] = campaign
-        # concurrently add the campaigns into the GUI
-        # NOTE: this fetches pictures from the CDN, so might be slow without a cache
-        status_update(
-            _("gui", "status", "adding_campaigns").format(counter=f"(0/{len(campaigns)})")
-        )
-        add_campaign_tasks: list[asyncio.Task[None]] = [
-            asyncio.create_task(self.gui.inv.add_campaign(campaign))
-            for campaign in campaigns
-        ]
-        try:
-            for i, coro in enumerate(asyncio.as_completed(add_campaign_tasks), start=1):
-                await coro
-                status_update(
-                    _("gui", "status", "adding_campaigns").format(
-                        counter=f"({i}/{len(campaigns)})"
-                    )
-                )
-                # this is needed here explicitly, because cache reads from disk don't raise this
-                if self.gui.close_requested:
-                    raise ExitRequest()
-        except Exception:
-            # asyncio.as_completed doesn't cancel tasks on errors
-            for task in add_campaign_tasks:
-                task.cancel()
-            raise
         self._mnt_triggers.extend(sorted(switch_triggers))
-        # trim out all triggers that we're already past
         now = datetime.now(timezone.utc)
         while self._mnt_triggers and self._mnt_triggers[0] <= now:
             self._mnt_triggers.popleft()
-        # NOTE: maintenance task is restarted at the end of each inventory fetch
         if self._mnt_task is not None and not self._mnt_task.done():
             self._mnt_task.cancel()
         self._mnt_task = asyncio.create_task(self._maintenance_task())
+
+        if diff.has_changes:
+            logger.log(
+                CALL,
+                f"Inventory diff: +{len(diff.added)} added, "
+                f"-{len(diff.removed)} removed, "
+                f"~{len(diff.updated)} updated, "
+                f"={len(diff.unchanged)} unchanged"
+            )
+        else:
+            logger.log(CALL, "Inventory diff: no changes detected")
+
+        return diff
 
     def get_active_campaign(self, channel: Channel | None = None) -> DropsCampaign | None:
         if not self.wanted_games:

@@ -5,6 +5,7 @@ import math
 import logging
 from enum import Enum
 from itertools import chain
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from functools import cached_property
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,22 @@ DIMS_PATTERN = re.compile(r'-\d+x\d+(?=\.(?:jpg|png|gif)$)', re.I)
 
 def remove_dimensions(url: URLType) -> URLType:
     return URLType(DIMS_PATTERN.sub('', url))
+
+
+@dataclass
+class InventoryDiff:
+    """
+    Captures the result of diffing new API data against existing campaign state.
+    Returned by fetch_inventory() so downstream states can short-circuit when nothing changed.
+    """
+    added: list[DropsCampaign] = field(default_factory=list)
+    removed: list[DropsCampaign] = field(default_factory=list)
+    updated: list[DropsCampaign] = field(default_factory=list)
+    unchanged: list[DropsCampaign] = field(default_factory=list)
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.added or self.removed or self.updated)
 
 
 class BenefitType(Enum):
@@ -103,6 +120,19 @@ class BaseDrop:
     def preconditions_met(self) -> bool:
         campaign = self.campaign
         return all(campaign.timed_drops[pid].is_claimed for pid in self.precondition_drops)
+
+    def _infer_claimed(self, claimed_benefits: dict[str, datetime]) -> bool:
+        """
+        Check if this drop's benefits were claimed based on benefit timestamps.
+        Returns True if all benefits appear in claimed_benefits with timestamps
+        within this drop's active window.
+        """
+        dts = [
+            claimed_benefits[bid]
+            for benefit in self.benefits
+            if (bid := benefit.id) in claimed_benefits
+        ]
+        return bool(dts) and all(self.starts_at <= dt < self.ends_at for dt in dts)
 
     def _on_state_changed(self) -> None:
         raise NotImplementedError
@@ -336,6 +366,103 @@ class TimedDrop(BaseDrop):
             delta = self.required_minutes - self.real_current_minutes
         self.campaign._update_real_minutes(delta)
 
+    def update_progress(
+        self,
+        drop_self_data: JsonType | None,
+        claimed_benefits: dict[str, datetime],
+    ) -> bool:
+        """
+        Quick update: updates drop progress from Inventory GQL 'self' data.
+        Preserves extra_current_minutes when possible.
+        Returns True if anything changed.
+        """
+        changed = False
+        if drop_self_data is not None:
+            new_claim_id: str | None = drop_self_data.get("dropInstanceID")
+            new_is_claimed: bool = drop_self_data.get("isClaimed", False)
+            new_minutes: int = drop_self_data.get("currentMinutesWatched", 0)
+        else:
+            # No self data available - preserve current state,
+            # but check claimed_benefits as a fallback
+            new_claim_id = self.claim_id
+            new_is_claimed = self.is_claimed
+            new_minutes = self.real_current_minutes
+            if not self.is_claimed and self._infer_claimed(claimed_benefits):
+                new_is_claimed = True
+
+        if new_claim_id != self.claim_id:
+            self.claim_id = new_claim_id
+            changed = True
+        if new_is_claimed != self.is_claimed:
+            self.is_claimed = new_is_claimed
+            if new_is_claimed:
+                self.real_current_minutes = self.required_minutes
+                self.extra_current_minutes = 0
+            changed = True
+        elif new_minutes != self.real_current_minutes:
+            # Only update minutes if claim status didn't change to claimed
+            if new_minutes > self.real_current_minutes:
+                # API confirmed progress ahead of our estimate - reset extra
+                self.extra_current_minutes = 0
+            self.real_current_minutes = min(new_minutes, self.required_minutes)
+            changed = True
+
+        if changed:
+            self._on_state_changed()
+        return changed
+
+    def update_from_data(
+        self, data: JsonType, claimed_benefits: dict[str, datetime]
+    ) -> bool:
+        """
+        Full update from merged API data (CampaignDetails).
+        Updates all fields including benefits, preconditions, required minutes.
+        Returns True if anything changed.
+        """
+        changed = False
+
+        # Update claim/progress from self data
+        drop_self = data.get("self") if "self" in data and data["self"] else None
+        changed = self.update_progress(drop_self, claimed_benefits) or changed
+
+        # Update fields that only come from CampaignDetails
+        new_required: int = data["requiredMinutesWatched"]
+        if new_required != self.required_minutes:
+            self.required_minutes = new_required
+            changed = True
+
+        new_name: str = data["name"]
+        if new_name != self.name:
+            self.name = new_name
+            changed = True
+
+        # Update time window
+        new_starts_at = timestamp(data["startAt"])
+        new_ends_at = timestamp(data["endAt"])
+        if new_starts_at != self.starts_at:
+            self.starts_at = new_starts_at
+            changed = True
+        if new_ends_at != self.ends_at:
+            self.ends_at = new_ends_at
+            changed = True
+
+        # Update preconditions
+        new_preconditions = [d["id"] for d in (data["preconditionDrops"] or [])]
+        if new_preconditions != self.precondition_drops:
+            self.precondition_drops = new_preconditions
+            changed = True
+
+        # Benefits rarely change, but handle it
+        new_benefit_ids = sorted(b["benefit"]["id"] for b in (data["benefitEdges"] or []))
+        old_benefit_ids = sorted(b.id for b in self.benefits)
+        if new_benefit_ids != old_benefit_ids:
+            self.benefits = [Benefit(b) for b in (data["benefitEdges"] or [])]
+            changed = True
+
+        if changed:
+            self._on_state_changed()
+        return changed
+
 
 class DropsCampaign:
     def __init__(self, twitch: Twitch, data: JsonType, claimed_benefits: dict[str, datetime]):
@@ -363,6 +490,14 @@ class DropsCampaign:
 
     def __repr__(self) -> str:
         return f"Campaign({self.game!s}, {self.name}, {self.claimed_drops}/{self.total_drops})"
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, self.__class__):
+            return self.id == other.id
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self.id)
 
     @property
     def drops(self) -> abc.Iterable[TimedDrop]:
@@ -510,3 +645,106 @@ class DropsCampaign:
             self._twitch.change_state(State.CHANNEL_SWITCH)
         if (first_drop := self.first_drop) is not None:
             first_drop.display()
+
+    def update_progress(
+        self,
+        inventory_campaign_data: JsonType,
+        claimed_benefits: dict[str, datetime],
+    ) -> bool:
+        """
+        Quick update: updates drop progress from Inventory GQL campaign data.
+        Used during quick checks (every reload interval). Only touches
+        drop self data (currentMinutesWatched, isClaimed, dropInstanceID).
+        Returns True if anything changed.
+        """
+        changed = False
+        for drop_data in inventory_campaign_data.get("timeBasedDrops", []):
+            drop_id = drop_data["id"]
+            existing_drop = self.timed_drops.get(drop_id)
+            if existing_drop is not None:
+                drop_self = drop_data.get("self")
+                if existing_drop.update_progress(drop_self, claimed_benefits):
+                    changed = True
+        return changed
+
+    def update_metadata(self, campaigns_data: JsonType) -> bool:
+        """
+        Quick update: updates campaign status and linked status from
+        Campaigns GQL basic data. Used during quick checks.
+        Returns True if anything changed.
+        """
+        changed = False
+
+        new_valid = campaigns_data.get("status", "ACTIVE") != "EXPIRED"
+        if new_valid != self._valid:
+            self._valid = new_valid
+            changed = True
+
+        if "self" in campaigns_data and campaigns_data["self"]:
+            new_linked = campaigns_data["self"].get("isAccountConnected", self.linked)
+            if new_linked != self.linked:
+                self.linked = new_linked
+                changed = True
+
+        return changed
+
+    def update_from_data(
+        self, data: JsonType, claimed_benefits: dict[str, datetime]
+    ) -> bool:
+        """
+        Full update from complete merged API data (Inventory + Campaigns + CampaignDetails).
+        Updates all fields including ACL, drops, benefits.
+        Used during full syncs (every FULL_SYNC_INTERVAL reloads).
+        Returns True if anything changed.
+        """
+        changed = False
+
+        # Status and linked
+        new_valid = data["status"] != "EXPIRED"
+        if new_valid != self._valid:
+            self._valid = new_valid
+            changed = True
+
+        new_linked: bool = data["self"]["isAccountConnected"]
+        if new_linked != self.linked:
+            self.linked = new_linked
+            changed = True
+
+        # ACL channels - compare by channel IDs to avoid unnecessary object churn
+        allowed: JsonType = data["allow"]
+        new_acl_ids: set[int] = set()
+        if allowed["channels"] and allowed.get("isEnabled", True):
+            new_acl_ids = {int(ch["id"]) for ch in allowed["channels"]}
+        old_acl_ids = {ch.id for ch in self.allowed_channels}
+        if new_acl_ids != old_acl_ids:
+            self.allowed_channels = (
+                [Channel.from_acl(self._twitch, ch) for ch in allowed["channels"]]
+                if allowed["channels"] and allowed.get("isEnabled", True) else []
+            )
+            changed = True
+
+        # Timed drops - diff by ID
+        new_drop_ids = {d["id"] for d in data["timeBasedDrops"]}
+        old_drop_ids = set(self.timed_drops.keys())
+
+        # Remove deleted drops
+        for drop_id in old_drop_ids - new_drop_ids:
+            del self.timed_drops[drop_id]
+            changed = True
+
+        # Update existing and add new drops
+        for drop_data in data["timeBasedDrops"]:
+            drop_id = drop_data["id"]
+            existing = self.timed_drops.get(drop_id)
+            if existing is not None:
+                if existing.update_from_data(drop_data, claimed_benefits):
+                    changed = True
+            else:
+                self.timed_drops[drop_id] = TimedDrop(self, drop_data, claimed_benefits)
+                changed = True
+
+        # Invalidate cached properties if benefits may have changed
+        if changed and "has_badge_or_emote" in self.__dict__:
+            del self.__dict__["has_badge_or_emote"]
+
+        return changed

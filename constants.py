@@ -127,6 +127,8 @@ PING_INTERVAL = timedelta(minutes=3)
 PING_TIMEOUT = timedelta(seconds=10)
 ONLINE_DELAY = timedelta(seconds=120)
 WATCH_INTERVAL = timedelta(seconds=59)
+RELOAD_INTERVAL = timedelta(minutes=10)
+FULL_SYNC_INTERVAL: int = 6  # every Nth reload does a full CampaignDetails fetch (~60 min)
 # Strings
 WINDOW_TITLE = f"Twitch Drops Miner v{__version__} (by DevilXD)"
 # Logging
@@ -251,9 +253,7 @@ class ClientType:
 class State(Enum):
     IDLE = auto()
     INVENTORY_FETCH = auto()
-    GAMES_UPDATE = auto()
-    CHANNELS_FETCH = auto()
-    CHANNELS_CLEANUP = auto()
+    CHANNELS_UPDATE = auto()  # replaces GAMES_UPDATE + CHANNELS_CLEANUP + CHANNELS_FETCH
     CHANNEL_SWITCH = auto()
     EXIT = auto()
 
