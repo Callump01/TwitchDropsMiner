@@ -169,12 +169,13 @@ class ChannelTable(AnimatedCard):
         return items
 
     def _highlight_watching_row(self, row: int, watching: bool) -> None:
+        palette = self._manager._theme.palette
         for col in range(self._model.columnCount()):
             item = self._model.item(row, col)
             if item is not None:
                 if watching:
-                    item.setBackground(QColor("#9146FF"))
-                    item.setForeground(QColor("#FFFFFF"))
+                    item.setBackground(QColor(palette.accent))
+                    item.setForeground(QColor(palette.selection_fg))
                 else:
                     item.setData(None, Qt.ItemDataRole.BackgroundRole)
                     item.setData(None, Qt.ItemDataRole.ForegroundRole)

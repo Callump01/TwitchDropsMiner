@@ -39,7 +39,7 @@ class MainTab(QWidget):
         top_row = QHBoxLayout()
         top_row.setSpacing(12)
 
-        self.status = StatusCard(self)
+        self.status = StatusCard(manager, self)
         self.status.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         top_row.addWidget(self.status, 2)
 

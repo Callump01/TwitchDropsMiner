@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, Property
 from PySide6.QtGui import QPainter, QColor, QPainterPath
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
 
 from gui.widgets.animated_card import AnimatedCard
 from gui.animations import PulseAnimator
+
+if TYPE_CHECKING:
+    from gui.theme import ThemeManager
 
 
 class _StatusDot(QWidget):
@@ -16,7 +21,7 @@ class _StatusDot(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setFixedSize(self.SIZE, self.SIZE)
-        self._color = QColor("#53535F")  # idle grey
+        self._color = QColor("#53535F")  # overwritten once theme is applied
         self._pulse: PulseAnimator | None = None
 
     def set_color(self, hex_color: str, pulse: bool = False) -> None:
@@ -45,18 +50,19 @@ class StatusCard(AnimatedCard):
     Replaces the original tkinter StatusBar + provides visual state feedback.
     """
 
-    # State → (colour hex, pulse)
-    STATE_STYLES: dict[str, tuple[str, bool]] = {
-        "idle":     ("#ADADB8", False),
-        "active":   ("#00C853", True),
-        "watching": ("#9146FF", True),
-        "error":    ("#EB0400", False),
-        "maint":    ("#E6A817", False),
-        "exiting":  ("#ADADB8", False),
+    # State → (palette attribute name, pulse)
+    _STATE_TOKENS: dict[str, tuple[str, bool]] = {
+        "idle":     ("foreground_muted", False),
+        "active":   ("success",         True),
+        "watching": ("accent",          True),
+        "error":    ("error",           False),
+        "maint":    ("warning",         False),
+        "exiting":  ("foreground_muted", False),
     }
 
-    def __init__(self, parent=None):
+    def __init__(self, manager, parent=None):
         super().__init__(parent, padding=12)
+        self._theme: ThemeManager = manager._theme
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
@@ -87,9 +93,10 @@ class StatusCard(AnimatedCard):
 
     def set_state(self, state: str) -> None:
         """Set visual state: idle, active, watching, error, maint, exiting."""
-        color, pulse = self.STATE_STYLES.get(state, ("#ADADB8", False))
+        token, pulse = self._STATE_TOKENS.get(state, ("foreground_muted", False))
+        color = getattr(self._theme.palette, token)
         self._dot.set_color(color, pulse=pulse)
 
     def clear(self) -> None:
         self._label.setText("")
-        self._dot.set_color("#ADADB8", pulse=False)
+        self._dot.set_color(self._theme.palette.foreground_muted, pulse=False)

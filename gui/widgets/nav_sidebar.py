@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import (
     Qt, QSize, Signal, QPropertyAnimation, QEasingCurve, Property, QTimer,
@@ -9,6 +10,9 @@ from PySide6.QtGui import QIcon, QPainter, QPainterPath, QColor, QPaintEvent, QM
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy, QGraphicsOpacityEffect,
 )
+
+if TYPE_CHECKING:
+    from gui.theme import ThemeManager
 
 
 @dataclass
@@ -31,9 +35,10 @@ class _NavButton(QWidget):
     INDICATOR_WIDTH = 3
     INDICATOR_HEIGHT = 24
 
-    def __init__(self, item: NavItem, parent: QWidget | None = None):
+    def __init__(self, item: NavItem, theme: ThemeManager, parent: QWidget | None = None):
         super().__init__(parent)
         self._item = item
+        self._theme = theme
         self._active = False
         self._hovered = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -70,8 +75,9 @@ class _NavButton(QWidget):
     def set_active(self, active: bool) -> None:
         self._active = active
         if active:
+            accent = self._theme.palette.accent
             self._indicator.setStyleSheet(
-                "background: #9146FF; border-radius: 1px;"
+                f"background: {accent}; border-radius: 1px;"
             )
         else:
             self._indicator.setStyleSheet(
@@ -102,7 +108,7 @@ class _NavButton(QWidget):
             p = QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             if self._active:
-                color = QColor("#9146FF")
+                color = QColor(self._theme.palette.accent)
                 color.setAlpha(25)
             else:
                 color = QColor(128, 128, 128, 20)
@@ -128,8 +134,9 @@ class NavSidebar(QWidget):
     COLLAPSED_WIDTH = 52
     ANIMATION_DURATION = 250
 
-    def __init__(self, items: list[NavItem], parent: QWidget | None = None):
+    def __init__(self, items: list[NavItem], theme: ThemeManager, parent: QWidget | None = None):
         super().__init__(parent)
+        self._theme = theme
         self._collapsed = False
         self._buttons: list[_NavButton] = []
         self._current_index = 0
@@ -159,14 +166,16 @@ class NavSidebar(QWidget):
         self._title_label.setFont(title_font)
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._title_label.setFixedHeight(48)
-        self._title_label.setStyleSheet("color: #9146FF; background: transparent;")
+        self._title_label.setStyleSheet(
+            f"color: {self._theme.palette.accent}; background: transparent;"
+        )
         layout.addWidget(self._title_label)
 
         layout.addSpacing(12)
 
         # Navigation buttons
         for i, item in enumerate(items):
-            btn = _NavButton(item, self)
+            btn = _NavButton(item, self._theme, self)
             btn.clicked.connect(lambda idx=i: self._on_clicked(idx))
             self._buttons.append(btn)
             layout.addWidget(btn)
@@ -174,7 +183,7 @@ class NavSidebar(QWidget):
         layout.addStretch(1)
 
         # Collapse toggle button
-        self._collapse_btn = _NavButton(NavItem(icon="\u276E", label="Collapse"), self)
+        self._collapse_btn = _NavButton(NavItem(icon="\u276E", label="Collapse"), self._theme, self)
         self._collapse_btn.clicked.connect(self.toggle_collapsed)
         layout.addWidget(self._collapse_btn)
 

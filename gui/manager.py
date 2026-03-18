@@ -135,7 +135,7 @@ class GUIManager:
             NavItem(icon="\u2699", label=_("gui", "tabs", "settings"), tooltip="Settings"),
             NavItem(icon="\u2139", label=_("gui", "tabs", "help"), tooltip="Help"),
         ]
-        self._sidebar = NavSidebar(nav_items, central)
+        self._sidebar = NavSidebar(nav_items, self._theme, central)
         central_layout.addWidget(self._sidebar)
 
         # Stacked widget for tab content

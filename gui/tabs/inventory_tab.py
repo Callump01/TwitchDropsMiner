@@ -74,7 +74,7 @@ class InventoryTab(QWidget):
         }
         filter_keys = ["not_linked", "upcoming", "expired", "excluded", "finished"]
         for key in filter_keys:
-            toggle = ToggleSwitch(self, checked=filter_defaults.get(key, False))
+            toggle = ToggleSwitch(self, checked=filter_defaults.get(key, False), theme=self._manager._theme)
             label = QLabel(_("gui", "inventory", "filter", key), self)
             filter_layout.addWidget(toggle)
             filter_layout.addWidget(label)

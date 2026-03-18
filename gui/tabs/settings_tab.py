@@ -115,7 +115,7 @@ class SettingsTab(QWidget):
         gen_grid.addWidget(
             QLabel(_("gui", "settings", "general", "autostart"), general_card), row, 0
         )
-        self._autostart_toggle = ToggleSwitch(general_card, checked=False)
+        self._autostart_toggle = ToggleSwitch(general_card, checked=False, theme=self._manager._theme)
         self._autostart_toggle.toggled.connect(lambda _: self.update_autostart())
         gen_grid.addWidget(self._autostart_toggle, row, 1)
         row += 1
@@ -126,7 +126,8 @@ class SettingsTab(QWidget):
                 QLabel(_("gui", "settings", "general", "tray"), general_card), row, 0
             )
             self._tray_toggle = ToggleSwitch(
-                general_card, checked=self._settings.autostart_tray
+                general_card, checked=self._settings.autostart_tray,
+                theme=self._manager._theme,
             )
             self._tray_toggle.toggled.connect(lambda _: self.update_autostart())
             gen_grid.addWidget(self._tray_toggle, row, 1)
@@ -136,7 +137,8 @@ class SettingsTab(QWidget):
                 QLabel(_("gui", "settings", "general", "tray_notifications"), general_card), row, 0
             )
             self._notif_toggle = ToggleSwitch(
-                general_card, checked=self._settings.tray_notifications
+                general_card, checked=self._settings.tray_notifications,
+                theme=self._manager._theme,
             )
             self._notif_toggle.toggled.connect(
                 lambda v: setattr(self._settings, "tray_notifications", v)
@@ -152,7 +154,8 @@ class SettingsTab(QWidget):
             QLabel(_("gui", "settings", "general", "dark_mode"), general_card), row, 0
         )
         self._dark_toggle = ToggleSwitch(
-            general_card, checked=self._settings.dark_mode
+            general_card, checked=self._settings.dark_mode,
+            theme=self._manager._theme,
         )
         self._dark_toggle.toggled.connect(self._on_dark_mode_toggled)
         gen_grid.addWidget(self._dark_toggle, row, 1)
@@ -216,7 +219,8 @@ class SettingsTab(QWidget):
             QLabel(_("gui", "settings", "advanced", "enable_badges_emotes"), adv_card), arow, 0
         )
         self._badges_toggle = ToggleSwitch(
-            adv_card, checked=self._settings.enable_badges_emotes
+            adv_card, checked=self._settings.enable_badges_emotes,
+            theme=self._manager._theme,
         )
         self._badges_toggle.toggled.connect(
             lambda v: setattr(self._settings, "enable_badges_emotes", v)
@@ -228,7 +232,8 @@ class SettingsTab(QWidget):
             QLabel(_("gui", "settings", "advanced", "available_drops_check"), adv_card), arow, 0
         )
         self._drops_check_toggle = ToggleSwitch(
-            adv_card, checked=self._settings.available_drops_check
+            adv_card, checked=self._settings.available_drops_check,
+            theme=self._manager._theme,
         )
         self._drops_check_toggle.toggled.connect(
             lambda v: setattr(self._settings, "available_drops_check", v)
