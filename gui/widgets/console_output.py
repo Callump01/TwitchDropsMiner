@@ -17,6 +17,8 @@ class ConsoleOutput(AnimatedCard):
     Replaces the original tkinter ConsoleOutput (tk.Text with scrollbars).
     """
 
+    MAX_LINES: int = 1000
+
     def __init__(self, parent=None):
         super().__init__(parent, padding=0)
 
@@ -52,6 +54,19 @@ class ConsoleOutput(AnimatedCard):
         if '\n' in message:
             message = message.replace('\n', f"\n{stamp}: ")
         self._text.append(f"{stamp}: {message}")
+        # Prune oldest lines if over the cap
+        doc = self._text.document()
+        excess = doc.blockCount() - self.MAX_LINES
+        if excess > 0:
+            cursor = QTextCursor(doc)
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            for _ in range(excess):
+                cursor.movePosition(
+                    QTextCursor.MoveOperation.Down,
+                    QTextCursor.MoveMode.KeepAnchor,
+                )
+            cursor.removeSelectedText()
+            cursor.deleteChar()  # remove leftover newline
         # Auto-scroll to bottom
         cursor = self._text.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)

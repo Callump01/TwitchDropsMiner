@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 from gui.widgets.animated_card import AnimatedCard
 from gui.widgets.toggle_switch import ToggleSwitch
-from gui.animations import fade_in, fade_out
+from gui.animations import fade_in, fade_out, StylePulseAnimator
 from translate import _
 from constants import PriorityMode
 
@@ -104,8 +104,25 @@ class InventoryTab(QWidget):
         self._scroll.setWidget(self._container)
         layout.addWidget(self._scroll, 1)
 
+        # Empty state overlay (shown when no campaigns are visible)
+        self._empty_label = QLabel(self._container)
+        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_label.setText(
+            f"{_('gui', 'inventory', 'empty')}\n"
+            f"{_('gui', 'inventory', 'empty_hint')}"
+        )
+        self._empty_label.setProperty("class", "muted")
+        self._empty_label.setWordWrap(True)
+        self._container_layout.insertWidget(0, self._empty_label)
+
         self._campaigns: dict[DropsCampaign, _CampaignCard] = {}
         self._drop_labels: dict[str, QLabel] = {}
+        self._pulse_animators: dict[DropsCampaign, StylePulseAnimator] = {}
+
+    def _update_empty_state(self) -> None:
+        """Show or hide the empty state label based on visible campaign cards."""
+        any_visible = any(card.isVisible() for card in self._campaigns.values())
+        self._empty_label.setVisible(not any_visible)
 
     def _update_visibility(self, campaign: DropsCampaign) -> None:
         card = self._campaigns.get(campaign)
@@ -133,12 +150,13 @@ class InventoryTab(QWidget):
         card.setVisible(show)
 
     def get_status(self, campaign: DropsCampaign) -> tuple[str, str]:
+        palette = self._manager._theme.palette
         if campaign.active:
-            return (_("gui", "inventory", "status", "active"), "#00C853")
+            return (_("gui", "inventory", "status", "active"), palette.success)
         elif campaign.upcoming:
-            return (_("gui", "inventory", "status", "upcoming"), "#E6A817")
+            return (_("gui", "inventory", "status", "upcoming"), palette.warning)
         else:
-            return (_("gui", "inventory", "status", "expired"), "#EB0400")
+            return (_("gui", "inventory", "status", "expired"), palette.error)
 
     def refresh(self) -> None:
         for campaign, card in self._campaigns.items():
@@ -148,6 +166,7 @@ class InventoryTab(QWidget):
                 status_label.setText(status_text)
                 status_label.setStyleSheet(f"color: {status_color}; background: transparent;")
             self._update_visibility(campaign)
+        self._update_empty_state()
 
     async def add_campaign(self, campaign: DropsCampaign) -> None:
         card = _CampaignCard(campaign, self._container)
@@ -159,12 +178,17 @@ class InventoryTab(QWidget):
         main_h.setSpacing(12)
 
         # Campaign image placeholder (will be filled async)
+        palette = self._manager._theme.palette
         img_label = QLabel(card)
         img_label.setFixedSize(108, 144)
         img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         img_label.setStyleSheet(
-            "background: #2F2F35; border-radius: 6px;"
+            f"background: {palette.border}; border-radius: 6px;"
         )
+        # Pulse animation while loading (stylesheet-based, avoids QPainter conflicts)
+        pulse = StylePulseAnimator(img_label, base_color=palette.border)
+        pulse.start()
+        self._pulse_animators[campaign] = pulse
         main_h.addWidget(img_label)
 
         # Info column
@@ -195,10 +219,10 @@ class InventoryTab(QWidget):
         # Link status
         if campaign.eligible:
             link_text = _("gui", "inventory", "status", "linked")
-            link_color = "#00C853"
+            link_color = palette.success
         else:
             link_text = _("gui", "inventory", "status", "not_linked")
-            link_color = "#EB0400"
+            link_color = palette.error
         link_label = QLabel(link_text, card)
         link_label.setStyleSheet(f"color: {link_color}; background: transparent;")
         link_label.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -228,7 +252,7 @@ class InventoryTab(QWidget):
         # Vertical separator
         sep = QFrame(card)
         sep.setFrameShape(QFrame.Shape.VLine)
-        sep.setStyleSheet("color: #2F2F35;")
+        sep.setStyleSheet(f"color: {palette.border};")
         main_h.addWidget(sep)
 
         # Drops grid
@@ -252,6 +276,10 @@ class InventoryTab(QWidget):
                 img_label.setStyleSheet("border-radius: 6px;")
         except Exception:
             pass
+        # Stop pulse animation regardless of success/failure
+        pulse_anim = self._pulse_animators.pop(campaign, None)
+        if pulse_anim is not None:
+            pulse_anim.stop()
 
         for drop in campaign.drops:
             drop_frame = QWidget(drops_widget)
@@ -268,11 +296,19 @@ class InventoryTab(QWidget):
                 benefit_images = [None] * len(drop.benefits)
 
             for benefit, bimg in zip(drop.benefits, benefit_images):
+                blabel = QLabel(drop_frame)
+                blabel.setFixedSize(64, 64)
+                blabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 if bimg is not None:
-                    blabel = QLabel(drop_frame)
                     blabel.setPixmap(bimg)
-                    blabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    drop_vlayout.addWidget(blabel)
+                else:
+                    # Fallback placeholder for failed image loads
+                    blabel.setText("?")
+                    blabel.setStyleSheet(
+                        f"background: {palette.border}; border-radius: 4px;"
+                        f" color: {palette.foreground_muted}; font-size: 20px;"
+                    )
+                drop_vlayout.addWidget(blabel)
                 bname = QLabel(benefit.name, drop_frame)
                 bname.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 bname.setWordWrap(True)
@@ -295,15 +331,17 @@ class InventoryTab(QWidget):
         # Animate card in
         fade_in(card, duration=300)
         self._update_visibility(campaign)
+        self._update_empty_state()
 
     def _update_progress(self, drop, label: QLabel) -> None:
+        palette = self._manager._theme.palette
         progress_text: str
         color: str = ""
         if drop.is_claimed:
-            color = "#00C853"
+            color = palette.success
             progress_text = _("gui", "inventory", "status", "claimed")
         elif drop.can_claim:
-            color = "#E6A817"
+            color = palette.warning
             progress_text = _("gui", "inventory", "status", "ready_to_claim")
         elif drop.current_minutes or drop.can_earn():
             progress_text = _("gui", "inventory", "percent_progress").format(
@@ -345,15 +383,25 @@ class InventoryTab(QWidget):
             # Clean up drop label references
             for drop in campaign.drops:
                 self._drop_labels.pop(drop.id, None)
+            # Clean up pulse animator
+            pulse = self._pulse_animators.pop(campaign, None)
+            if pulse is not None:
+                pulse.stop()
             # Animate out and remove
             fade_out(card, duration=200)
             card.setParent(None)
             card.deleteLater()
+            self._update_empty_state()
 
     def clear(self) -> None:
+        # Stop all pulse animations
+        for pulse in self._pulse_animators.values():
+            pulse.stop()
+        self._pulse_animators.clear()
         # Remove all campaign cards
         for card in self._campaigns.values():
             card.setParent(None)
             card.deleteLater()
         self._campaigns.clear()
         self._drop_labels.clear()
+        self._update_empty_state()

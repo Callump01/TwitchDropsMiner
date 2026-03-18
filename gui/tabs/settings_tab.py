@@ -179,10 +179,15 @@ class SettingsTab(QWidget):
             prefill="http://",
         )
         self._proxy_entry.setText(str(self._settings.proxy))
-        self._proxy_entry.editingFinished.connect(
-            lambda: _proxy_validate(self._proxy_entry, self._settings)
-        )
+        self._proxy_entry.editingFinished.connect(self._on_proxy_validate)
         gen_grid.addWidget(self._proxy_entry, row, 1)
+        row += 1
+
+        # Proxy error label (hidden by default)
+        self._proxy_error = QLabel(_("gui", "settings", "proxy_error"), general_card)
+        self._proxy_error.setProperty("class", "error")
+        self._proxy_error.setVisible(False)
+        gen_grid.addWidget(self._proxy_error, row, 1)
         row += 1
 
         gen_layout.addLayout(gen_grid)
@@ -261,6 +266,16 @@ class SettingsTab(QWidget):
         self._priority_list = QListWidget(prio_card)
         self._priority_list.setMinimumHeight(200)
         self._priority_list.addItems(self._settings.priority)
+
+        # Empty state overlay for priority list
+        self._priority_empty = QLabel(
+            _("gui", "settings", "priority_empty"), self._priority_list
+        )
+        self._priority_empty.setProperty("class", "muted")
+        self._priority_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._priority_empty.setWordWrap(True)
+        self._priority_empty.setVisible(self._priority_list.count() == 0)
+
         prio_list_row.addWidget(self._priority_list, 1)
 
         # Move/delete buttons
@@ -304,6 +319,16 @@ class SettingsTab(QWidget):
         self._exclude_list = QListWidget(excl_card)
         self._exclude_list.setMinimumHeight(200)
         self._exclude_list.addItems(sorted(self._settings.exclude))
+
+        # Empty state overlay for exclude list
+        self._exclude_empty = QLabel(
+            _("gui", "settings", "exclude_empty"), self._exclude_list
+        )
+        self._exclude_empty.setProperty("class", "muted")
+        self._exclude_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._exclude_empty.setWordWrap(True)
+        self._exclude_empty.setVisible(self._exclude_list.count() == 0)
+
         excl_layout.addWidget(self._exclude_list)
 
         excl_del_btn = QPushButton("\u274C  Remove Selected", excl_card)
@@ -337,6 +362,15 @@ class SettingsTab(QWidget):
 
         # Initialize autostart state
         self._autostart_toggle.setChecked(self._query_autostart(), animated=False)
+
+    # ---- Proxy validation ----
+    def _on_proxy_validate(self) -> None:
+        valid = _proxy_validate(self._proxy_entry, self._settings)
+        self._proxy_error.setVisible(not valid)
+        self._proxy_entry.setProperty("error", "true" if not valid else "false")
+        # Force style refresh after dynamic property change
+        self._proxy_entry.style().unpolish(self._proxy_entry)
+        self._proxy_entry.style().polish(self._proxy_entry)
 
     # ---- Dark mode ----
     def _on_dark_mode_toggled(self, checked: bool) -> None:
@@ -389,6 +423,7 @@ class SettingsTab(QWidget):
             self._settings.priority.append(game_name)
             self._settings.alter()
             self.update_priority_choices()
+            self._priority_empty.setVisible(False)
         else:
             self._priority_list.setCurrentRow(existing_idx)
 
@@ -419,6 +454,7 @@ class SettingsTab(QWidget):
         del self._settings.priority[idx]
         self._settings.alter()
         self.update_priority_choices()
+        self._priority_empty.setVisible(self._priority_list.count() == 0)
 
     # ---- Exclude list operations ----
     def exclude_add(self) -> None:
@@ -437,6 +473,7 @@ class SettingsTab(QWidget):
             insert_idx = items.index(game_name)
             self._exclude_list.insertItem(insert_idx, game_name)
             self._exclude_list.setCurrentRow(insert_idx)
+            self._exclude_empty.setVisible(False)
         else:
             for i in range(self._exclude_list.count()):
                 if self._exclude_list.item(i).text() == game_name:
@@ -452,6 +489,7 @@ class SettingsTab(QWidget):
             self._settings.exclude.discard(item.text())
             self._settings.alter()
             self.update_excluded_choices()
+        self._exclude_empty.setVisible(self._exclude_list.count() == 0)
 
     # ---- Autostart (full platform support from original) ----
     def _get_self_path(self) -> str:

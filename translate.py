@@ -84,6 +84,9 @@ class GUILoginForm(TypedDict):
     password: str
     twofa_code: str
     button: str
+    error_username: str
+    error_password: str
+    error_token: str
 
 
 class GUIWebsocket(TypedDict):
@@ -120,6 +123,7 @@ class GUIChannels(TypedDict):
     online: str
     pending: str
     offline: str
+    empty: str
     headings: GUIChannelHeadings
 
 
@@ -147,6 +151,8 @@ class GUIInvStatus(TypedDict):
 class GUIInventory(TypedDict):
     filter: GUIInvFilter
     status: GUIInvStatus
+    empty: str
+    empty_hint: str
     starts: str
     ends: str
     allowed_channels: str
@@ -186,9 +192,12 @@ class GUISettings(TypedDict):
     priority_modes: GUIPriorityModes
     game_name: str
     priority: str
+    priority_empty: str
     exclude: str
+    exclude_empty: str
     reload: str
     reload_text: str
+    proxy_error: str
 
 
 class GUIHelpLinks(TypedDict):
@@ -304,6 +313,9 @@ default_translation: Translation = {
             "password": "Password",
             "twofa_code": "2FA code (optional)",
             "button": "Login",
+            "error_username": "Username must be 3\u201325 alphanumeric characters",
+            "error_password": "Password must be at least 8 characters",
+            "error_token": "2FA code must be at least 6 characters",
         },
         "websocket": {
             "name": "Websocket Status",
@@ -330,6 +342,7 @@ default_translation: Translation = {
             "online": "ONLINE  ✔",
             "pending": "OFFLINE ⏳",
             "offline": "OFFLINE ❌",
+            "empty": "No channels being tracked",
             "headings": {
                 "channel": "Channel",
                 "status": "Status",
@@ -357,6 +370,8 @@ default_translation: Translation = {
                 "claimed": "Claimed ✔",
                 "ready_to_claim": "Ready to claim ⏳",
             },
+            "empty": "No campaigns available",
+            "empty_hint": "Use Refresh to check for new campaigns",
             "starts": "Starts: {time}",
             "ends": "Ends: {time}",
             "allowed_channels": "Allowed Channels:",
@@ -393,9 +408,12 @@ default_translation: Translation = {
             },
             "game_name": "Game name",
             "priority": "Priority",
+            "priority_empty": "Add games from the dropdown above",
             "exclude": "Exclude",
+            "exclude_empty": "No excluded games",
             "reload": "Reload",
             "reload_text": "Most changes require a reload to take an immediate effect: ",
+            "proxy_error": "Invalid proxy format",
         },
         "help": {
             "links": {

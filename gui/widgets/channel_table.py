@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QModelIndex
+from PySide6.QtCore import Qt, QModelIndex, QEvent
 from PySide6.QtGui import QFont, QColor, QStandardItemModel, QStandardItem
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeView, QPushButton,
@@ -109,11 +109,35 @@ class ChannelTable(AnimatedCard):
 
         self._tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         inner.addWidget(self._tree, 1)
+
+        # Empty state overlay
+        self._empty_label = QLabel(_("gui", "channels", "empty"), self._tree)
+        self._empty_label.setProperty("class", "muted")
+        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_label.setWordWrap(True)
+
         self.card_layout.addLayout(inner)
+
+        # Install event filter to reposition empty label on resize
+        self._tree.viewport().installEventFilter(self)
 
         self._channel_map: dict[int, Channel] = {}  # iid -> channel
         self._row_map: dict[int, int] = {}  # iid -> row index
         self._watching_iid: int | None = None
+
+    def _update_empty_state(self) -> None:
+        has_rows = self._model.rowCount() > 0
+        self._empty_label.setVisible(not has_rows)
+        if not has_rows:
+            # Reposition label over the viewport area
+            vp = self._tree.viewport()
+            self._empty_label.setGeometry(vp.geometry())
+
+    def eventFilter(self, obj, event):  # type: ignore[override]
+        if obj is self._tree.viewport() and event.type() == QEvent.Type.Resize:
+            if self._empty_label.isVisible():
+                self._empty_label.setGeometry(self._tree.viewport().geometry())
+        return super().eventFilter(obj, event)
 
     def _on_switch(self) -> None:
         self._manager._twitch.state_change(State.CHANNEL_SWITCH)()
@@ -173,6 +197,7 @@ class ChannelTable(AnimatedCard):
             row = self._model.rowCount()
             self._row_map[iid] = row
             self._model.appendRow(self._make_row(channel))
+            self._update_empty_state()
 
     def remove(self, channel: Channel) -> None:
         iid = channel.iid
@@ -188,12 +213,14 @@ class ChannelTable(AnimatedCard):
                 if item is not None:
                     r_iid = item.data(Qt.ItemDataRole.UserRole)
                     self._row_map[r_iid] = r
+            self._update_empty_state()
 
     def clear(self) -> None:
         self._model.removeRows(0, self._model.rowCount())
         self._channel_map.clear()
         self._row_map.clear()
         self._watching_iid = None
+        self._update_empty_state()
 
     def clear_watching(self) -> None:
         if self._watching_iid is not None and self._watching_iid in self._row_map:

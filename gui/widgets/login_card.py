@@ -72,16 +72,28 @@ class LoginCard(AnimatedCard):
             self._form_widget, placeholder=_("gui", "login", "username")
         )
         form_layout.addWidget(self._login_entry)
+        self._login_error = QLabel(self._form_widget)
+        self._login_error.setProperty("class", "error")
+        self._login_error.setVisible(False)
+        form_layout.addWidget(self._login_error)
 
         self._pass_entry = PlaceholderLineEdit(
             self._form_widget, placeholder=_("gui", "login", "password"), password=True
         )
         form_layout.addWidget(self._pass_entry)
+        self._pass_error = QLabel(self._form_widget)
+        self._pass_error.setProperty("class", "error")
+        self._pass_error.setVisible(False)
+        form_layout.addWidget(self._pass_error)
 
         self._token_entry = PlaceholderLineEdit(
             self._form_widget, placeholder=_("gui", "login", "twofa_code")
         )
         form_layout.addWidget(self._token_entry)
+        self._token_error = QLabel(self._form_widget)
+        self._token_error.setProperty("class", "error")
+        self._token_error.setVisible(False)
+        form_layout.addWidget(self._token_error)
 
         self.card_layout.addWidget(self._form_widget)
         # Hidden by default - matches original where entry.grid() calls are commented out
@@ -130,17 +142,27 @@ class LoginCard(AnimatedCard):
                 self._pass_entry.get(),
                 self._token_entry.get().strip(),
             )
-            # Basic input validation (matches original exactly)
-            if (
-                not 3 <= len(login_data.username) <= 25
+            # Hide previous error messages
+            self._login_error.setVisible(False)
+            self._pass_error.setVisible(False)
+            self._token_error.setVisible(False)
+            # Basic input validation
+            if not (
+                3 <= len(login_data.username) <= 25
                 and re.match(r'^[a-zA-Z0-9_]+$', login_data.username)
             ):
+                self._login_error.setText(_("gui", "login", "error_username"))
+                self._login_error.setVisible(True)
                 self.clear(login=True)
                 continue
             if len(login_data.password) < 8:
+                self._pass_error.setText(_("gui", "login", "error_password"))
+                self._pass_error.setVisible(True)
                 self.clear(password=True)
                 continue
             if login_data.token and len(login_data.token) < 6:
+                self._token_error.setText(_("gui", "login", "error_token"))
+                self._token_error.setVisible(True)
                 self.clear(token=True)
                 continue
             return login_data

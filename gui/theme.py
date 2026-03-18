@@ -296,6 +296,9 @@ class ThemeManager:
         QLineEdit[class="placeholder-active"] {{
             color: {p.foreground_subtle};
         }}
+        QLineEdit[error="true"] {{
+            border-color: {p.error};
+        }}
 
         /* ===== COMBO BOX ===== */
         QComboBox {{

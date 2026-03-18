@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import (
     QPropertyAnimation,
+    QVariantAnimation,
     QEasingCurve,
     QParallelAnimationGroup,
     QSequentialAnimationGroup,
@@ -10,6 +11,7 @@ from PySide6.QtCore import (
     QObject,
     Signal,
 )
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QWidget, QGraphicsOpacityEffect
 
 
@@ -114,6 +116,56 @@ class PulseAnimator(QObject):
     @property
     def running(self) -> bool:
         return self._anim.state() == QPropertyAnimation.State.Running
+
+
+class StylePulseAnimator(QObject):
+    """Pulsing loading indicator using stylesheet background color changes.
+
+    Unlike PulseAnimator, this does NOT use QGraphicsOpacityEffect, avoiding
+    the 'QPainter::begin: A paint device can only be painted by one painter
+    at a time' error that occurs when many opacity effects run simultaneously
+    inside a scroll area.
+    """
+
+    def __init__(
+        self,
+        widget: QWidget,
+        base_color: str,
+        style_template: str = "background: {color}; border-radius: 6px;",
+        duration: int = 1200,
+        parent: QObject | None = None,
+    ):
+        super().__init__(parent or widget)
+        self._widget = widget
+        self._style_template = style_template
+
+        # Parse base colour and build a faded variant
+        base = QColor(base_color)
+        faded = QColor(base)
+        faded.setAlphaF(0.35)
+
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(duration)
+        self._anim.setStartValue(base)
+        self._anim.setEndValue(faded)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        self._anim.setLoopCount(-1)  # infinite
+        self._anim.valueChanged.connect(self._apply)
+
+    def _apply(self, color: QColor) -> None:
+        self._widget.setStyleSheet(
+            self._style_template.format(color=color.name(QColor.NameFormat.HexArgb))
+        )
+
+    def start(self) -> None:
+        self._anim.start()
+
+    def stop(self) -> None:
+        self._anim.stop()
+
+    @property
+    def running(self) -> bool:
+        return self._anim.state() == QVariantAnimation.State.Running
 
 
 class SmoothProgressHelper(QObject):
