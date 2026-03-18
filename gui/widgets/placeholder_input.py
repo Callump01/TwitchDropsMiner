@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFocusEvent
-from PySide6.QtWidgets import QLineEdit, QComboBox
+from PySide6.QtWidgets import QLineEdit, QComboBox, QCompleter
+from PySide6.QtCore import QStringListModel
 
 
 class PlaceholderLineEdit(QLineEdit):
@@ -72,6 +73,14 @@ class PlaceholderComboBox(QComboBox):
         self.lineEdit().setPlaceholderText(placeholder)
         self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
 
+        # Case-insensitive substring matching completer
+        self._completer = QCompleter(self)
+        self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._completer_model = QStringListModel(self)
+        self._completer.setModel(self._completer_model)
+        self.setCompleter(self._completer)
+
     def get(self) -> str:
         return self.currentText().strip()
 
@@ -86,3 +95,5 @@ class PlaceholderComboBox(QComboBox):
         self.addItems(items)
         self.setCurrentText(current)
         self.blockSignals(False)
+        # Update completer model for substring matching
+        self._completer_model.setStringList(items)

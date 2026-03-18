@@ -32,6 +32,8 @@ class LoginCard(AnimatedCard):
     The primary login flow is device-code based via ask_enter_code().
     """
 
+    COMPACT_HEIGHT = 64  # matches StatusCard
+
     def __init__(self, manager, parent=None):
         super().__init__(parent, padding=12)
         self._manager = manager
@@ -40,7 +42,7 @@ class LoginCard(AnimatedCard):
         status_row = QHBoxLayout()
         status_row.setSpacing(8)
 
-        title = QLabel(_("gui", "login", "name"), self)
+        title = QLabel("Twitch Account", self)
         title.setProperty("class", "section-title")
         status_row.addWidget(title)
         status_row.addStretch(1)
@@ -184,7 +186,12 @@ class LoginCard(AnimatedCard):
         self._status_label.setText(status)
         if user_id is not None:
             self._user_id_label.setText(f"ID: {user_id}")
-            # Hide form when logged in
+            # Compact mode when logged in - match StatusCard height
             self._form_widget.setVisible(False)
+            self._button.setVisible(False)
+            self.setFixedHeight(self.COMPACT_HEIGHT)
         else:
             self._user_id_label.setText("ID: -")
+            self._button.setVisible(True)
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX

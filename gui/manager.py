@@ -17,6 +17,8 @@ from PIL import Image as Image_module
 
 from gui.theme import ThemeManager
 from gui.tray import TrayIcon
+from gui.widgets.toast import ToastManager
+from gui.widgets.websocket_panel import WebsocketPanel
 from gui.widgets.nav_sidebar import NavSidebar, NavItem
 from gui.tabs.main_tab import MainTab
 from gui.tabs.inventory_tab import InventoryTab
@@ -104,7 +106,7 @@ class GUIManager:
         # Create main window
         self._window = _MainWindow(self)
         self._window.setWindowTitle(WINDOW_TITLE)
-        self._window.setMinimumSize(QSize(960, 640))
+        self._window.setMinimumSize(QSize(960, 780))
 
         # Set window icon
         icon_path = resource_path("icons/pickaxe.ico")
@@ -161,15 +163,22 @@ class GUIManager:
         # Connect sidebar navigation to stacked widget
         self._sidebar.tab_changed.connect(self._on_tab_changed)
 
+        # WebsocketPanel lives in the sidebar
+        self._ws_panel = WebsocketPanel(self._sidebar)
+        self._sidebar.set_aux_widget(self._ws_panel)
+
         # Expose sub-components via the original interface names
         self.status = self._main_tab.status
         self.login = self._main_tab.login
-        self.websockets = self._main_tab.websockets
+        self.websockets = self._ws_panel
         self.progress = self._main_tab.progress
         self.output = self._main_tab.output
         self.channels = self._main_tab.channels
         self.inv = self._inv_tab
         self.settings = self._settings_tab
+
+        # Toast notification manager
+        self._toasts = ToastManager(self._window, self._theme)
 
         # Tray icon
         self.tray = TrayIcon(self)
@@ -181,6 +190,9 @@ class GUIManager:
         logger.addHandler(self._handler)
         if (logging_level := logger.getEffectiveLevel()) < logging.ERROR:
             self.print(f"Logging level: {logging.getLevelName(logging_level)}")
+
+        # Connect theme change handler for widgets with baked-in palette colors
+        self._theme.theme_changed.connect(self._on_theme_changed)
 
         # Apply theme
         app = QApplication.instance()
@@ -264,9 +276,19 @@ class GUIManager:
     def print(self, message: str) -> None:
         self.output.print(message)
 
+    def toast(self, message: str, toast_type: str = "info", duration: int = 5000) -> None:
+        """Show an in-app toast notification."""
+        self._toasts.show_toast(message, toast_type, duration)
+
     def display_drop(
         self, drop: TimedDrop, *, countdown: bool = True, subone: bool = False
     ) -> None:
+        # Toast when switching to a different drop
+        prev_drop = self.progress._drop
+        if drop is not None and (prev_drop is None or prev_drop.id != drop.id):
+            reward = drop.rewards_text()
+            game = drop.campaign.game.name
+            self.toast(f"{game}: {reward}", "info", 4000)
         self.progress.display(drop, countdown=countdown, subone=subone)
         self.tray.update_title(drop)
 
@@ -306,3 +328,9 @@ class GUIManager:
                 ThemeManager.set_title_bar_color(hwnd, dark)
             except Exception:
                 pass
+
+    def _on_theme_changed(self) -> None:
+        """Refresh widgets that bake palette colors at construction time."""
+        self._sidebar.refresh_theme()
+        self._main_tab.channels._refresh_watching_highlight()
+        self._inv_tab.refresh()

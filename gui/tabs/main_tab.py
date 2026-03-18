@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QSizePolicy,
+    QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy,
 )
 
 from gui.widgets.status_card import StatusCard
 from gui.widgets.login_card import LoginCard
-from gui.widgets.websocket_panel import WebsocketPanel
 from gui.widgets.progress_card import ProgressCard
 from gui.widgets.console_output import ConsoleOutput
 from gui.widgets.channel_table import ChannelTable
@@ -21,11 +20,14 @@ class MainTab(QWidget):
     ┌─────────────────────────────────────────────┐
     │  [Status Card]            [Login Card]       │
     ├─────────────────────────────────────────────┤
-    │  [Campaign Progress Card]                    │
-    ├──────────────────┬──────────────────────────┤
-    │  [Websocket]     │  [Channel Table]          │
-    │  [Console]       │                           │
-    └──────────────────┴──────────────────────────┘
+    │  [Progress Card - hero with ring + segments] │
+    ├─────────────────────────────────────────────┤
+    │  [Channel Table - full width]                │
+    ├─────────────────────────────────────────────┤
+    │  [Console Output]                            │
+    └─────────────────────────────────────────────┘
+
+    WebsocketPanel lives in the sidebar (set by GUIManager).
     """
 
     def __init__(self, manager, parent=None):
@@ -35,7 +37,7 @@ class MainTab(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        # Top row: Status + Login
+        # Top row: Status + Login (compact)
         top_row = QHBoxLayout()
         top_row.setSpacing(12)
 
@@ -49,34 +51,16 @@ class MainTab(QWidget):
 
         layout.addLayout(top_row)
 
-        # Campaign progress
+        # Hero: Campaign progress card (never squished)
         self.progress = ProgressCard(manager, self)
+        self.progress.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.progress)
 
-        # Bottom split: Left (websocket + console) / Right (channels)
-        bottom_splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        bottom_splitter.setChildrenCollapsible(False)
-
-        # Left column
-        left_widget = QWidget(self)
-        left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(12)
-
-        self.websockets = WebsocketPanel(self)
-        left_layout.addWidget(self.websockets)
-
-        self.output = ConsoleOutput(self)
-        left_layout.addWidget(self.output, 1)
-
-        bottom_splitter.addWidget(left_widget)
-
-        # Right column
+        # Channel table (takes remaining vertical space)
         self.channels = ChannelTable(manager, self)
-        bottom_splitter.addWidget(self.channels)
+        layout.addWidget(self.channels, 1)
 
-        # Set initial split ratio (40% left, 60% right)
-        bottom_splitter.setStretchFactor(0, 2)
-        bottom_splitter.setStretchFactor(1, 3)
-
-        layout.addWidget(bottom_splitter, 1)
+        # Console output (fixed height at bottom)
+        self.output = ConsoleOutput(self)
+        self.output.setFixedHeight(180)
+        layout.addWidget(self.output)

@@ -9,11 +9,12 @@ from textwrap import dedent
 from functools import partial, cached_property
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QPushButton, QComboBox, QListWidget, QScrollArea, QFrame,
-    QSizePolicy,
+    QSizePolicy, QAbstractItemView,
 )
 
 from gui.widgets.animated_card import AnimatedCard
@@ -94,6 +95,14 @@ class SettingsTab(QWidget):
         gen_title = QLabel(_("gui", "settings", "general", "name"), general_card)
         gen_title.setProperty("class", "heading")
         gen_layout.addWidget(gen_title)
+
+        gen_desc = QLabel(
+            "Configure basic application behavior, appearance, and mining priority.",
+            general_card,
+        )
+        gen_desc.setProperty("class", "muted")
+        gen_desc.setWordWrap(True)
+        gen_layout.addWidget(gen_desc)
 
         gen_grid = QGridLayout()
         gen_grid.setSpacing(10)
@@ -203,6 +212,14 @@ class SettingsTab(QWidget):
         adv_title.setProperty("class", "heading")
         adv_layout.addWidget(adv_title)
 
+        adv_desc = QLabel(
+            "These settings affect how the miner interacts with Twitch. Change with caution.",
+            adv_card,
+        )
+        adv_desc.setProperty("class", "muted")
+        adv_desc.setWordWrap(True)
+        adv_layout.addWidget(adv_desc)
+
         warn_label = QLabel(_("gui", "settings", "advanced", "warning"), adv_card)
         warn_label.setProperty("class", "error")
         adv_layout.addWidget(warn_label)
@@ -271,6 +288,10 @@ class SettingsTab(QWidget):
         self._priority_list = QListWidget(prio_card)
         self._priority_list.setMinimumHeight(200)
         self._priority_list.addItems(self._settings.priority)
+        # Enable drag-and-drop reordering
+        self._priority_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self._priority_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self._priority_list.model().rowsMoved.connect(self._on_priority_reordered)
 
         # Empty state overlay for priority list
         self._priority_empty = QLabel(
@@ -414,6 +435,27 @@ class SettingsTab(QWidget):
         self.update_excluded_choices()
         self.update_priority_choices()
 
+    # ---- Drag-and-drop reorder ----
+    def _on_priority_reordered(self) -> None:
+        """Sync settings.priority with the new list order after drag-drop."""
+        self._settings.priority.clear()
+        for i in range(self._priority_list.count()):
+            item = self._priority_list.item(i)
+            if item is not None:
+                self._settings.priority.append(item.text())
+        self._settings.alter()
+
+    def _flash_item(self, list_widget: QListWidget, row: int) -> None:
+        """Briefly flash an item with accent color as success feedback."""
+        item = list_widget.item(row)
+        if item is None:
+            return
+        accent_light = self._manager._theme.palette.accent_light
+        item.setBackground(QColor(accent_light))
+        QTimer.singleShot(
+            600, lambda: item.setData(Qt.ItemDataRole.BackgroundRole, None)
+        )
+
     # ---- Priority list operations ----
     def priority_add(self) -> None:
         game_name = self._priority_entry.get()
@@ -424,11 +466,14 @@ class SettingsTab(QWidget):
             existing_idx = self._settings.priority.index(game_name)
         except ValueError:
             self._priority_list.addItem(game_name)
+            new_row = self._priority_list.count() - 1
             self._priority_list.scrollToBottom()
             self._settings.priority.append(game_name)
             self._settings.alter()
             self.update_priority_choices()
             self._priority_empty.setVisible(False)
+            # Flash success animation
+            self._flash_item(self._priority_list, new_row)
         else:
             self._priority_list.setCurrentRow(existing_idx)
 
@@ -479,6 +524,8 @@ class SettingsTab(QWidget):
             self._exclude_list.insertItem(insert_idx, game_name)
             self._exclude_list.setCurrentRow(insert_idx)
             self._exclude_empty.setVisible(False)
+            # Flash success animation
+            self._flash_item(self._exclude_list, insert_idx)
         else:
             for i in range(self._exclude_list.count()):
                 if self._exclude_list.item(i).text() == game_name:

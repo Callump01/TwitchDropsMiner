@@ -4,6 +4,7 @@ import sys
 import ctypes
 from dataclasses import dataclass
 
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QPalette, QColor
 
@@ -48,6 +49,8 @@ class ColorPalette:
     scrollbar_handle_hover: str
     # Shadow (CSS box-shadow colour)
     shadow: str
+    # Background gradient (subtle radial gradient center)
+    background_gradient_center: str
 
 
 DARK_PALETTE = ColorPalette(
@@ -74,6 +77,7 @@ DARK_PALETTE = ColorPalette(
     scrollbar_handle="#3A3A3D",
     scrollbar_handle_hover="#53535F",
     shadow="rgba(0, 0, 0, 0.45)",
+    background_gradient_center="#131316",
 )
 
 LIGHT_PALETTE = ColorPalette(
@@ -100,13 +104,17 @@ LIGHT_PALETTE = ColorPalette(
     scrollbar_handle="#C8C8D0",
     scrollbar_handle_hover="#A0A0AB",
     shadow="rgba(0, 0, 0, 0.10)",
+    background_gradient_center="#FAFAFC",
 )
 
 
-class ThemeManager:
+class ThemeManager(QObject):
     """Generates and applies a comprehensive Qt stylesheet from a colour palette."""
 
-    def __init__(self) -> None:
+    theme_changed = Signal()
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
         self._dark: bool = False
         self._palette: ColorPalette = LIGHT_PALETTE
 
@@ -128,6 +136,7 @@ class ThemeManager:
         self._palette = DARK_PALETTE if dark else LIGHT_PALETTE
         app.setStyleSheet(self._build_stylesheet())
         self._apply_platform_appearance(dark)
+        self.theme_changed.emit()
 
     # ------------------------------------------------------------------ #
     #  Platform appearance (title bar / system theme)                     #
@@ -178,7 +187,12 @@ class ThemeManager:
             outline: none;
         }}
         QMainWindow, QWidget#CentralWidget {{
-            background-color: {p.background};
+            background-color: qradialgradient(
+                cx: 0.5, cy: 0.3, radius: 0.9,
+                fx: 0.5, fy: 0.3,
+                stop: 0 {p.background_gradient_center},
+                stop: 1 {p.background}
+            );
         }}
 
         /* ===== LABELS ===== */
@@ -424,7 +438,7 @@ class ThemeManager:
             border-radius: 4px;
             height: 8px;
             text-align: center;
-            font-size: 0px; /* hide text inside bar */
+            color: transparent; /* hide text inside bar */
         }}
         QProgressBar::chunk {{
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,

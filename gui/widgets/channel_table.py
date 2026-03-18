@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QModelIndex, QEvent
+from PySide6.QtCore import Qt, QModelIndex, QEvent, QTimer, QSortFilterProxyModel
 from PySide6.QtGui import QFont, QColor, QStandardItemModel, QStandardItem
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeView, QPushButton,
-    QHeaderView, QAbstractItemView, QLabel,
+    QHeaderView, QAbstractItemView, QLabel, QMenu, QApplication,
 )
+
+from utils import webopen
 
 from gui.widgets.animated_card import AnimatedCard
 from translate import _
@@ -79,16 +81,25 @@ class ChannelTable(AnimatedCard):
                 headers.append(col)
         self._model.setHorizontalHeaderLabels(headers)
 
+        # Sort proxy model
+        self._proxy = QSortFilterProxyModel(self)
+        self._proxy.setSourceModel(self._model)
+        self._proxy.setSortCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+
         # Tree view
         self._tree = QTreeView(self)
-        self._tree.setModel(self._model)
+        self._tree.setModel(self._proxy)
         self._tree.setRootIsDecorated(False)
         self._tree.setAlternatingRowColors(True)
         self._tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._tree.setSortingEnabled(False)
+        self._tree.setSortingEnabled(True)
         self._tree.setMinimumHeight(150)
+
+        # Context menu
+        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._show_context_menu)
 
         # Header sizing
         h = self._tree.header()
@@ -110,11 +121,17 @@ class ChannelTable(AnimatedCard):
         self._tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         inner.addWidget(self._tree, 1)
 
-        # Empty state overlay
-        self._empty_label = QLabel(_("gui", "channels", "empty"), self._tree)
+        # Empty state overlay with animated dots
+        self._empty_label = QLabel(self._tree)
         self._empty_label.setProperty("class", "muted")
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_label.setWordWrap(True)
+        self._empty_base_text = _("gui", "channels", "empty")
+        self._empty_dot_count = 0
+        self._empty_timer = QTimer(self)
+        self._empty_timer.setInterval(500)
+        self._empty_timer.timeout.connect(self._animate_empty_dots)
+        self._empty_label.setText(self._empty_base_text)
 
         self.card_layout.addLayout(inner)
 
@@ -125,6 +142,11 @@ class ChannelTable(AnimatedCard):
         self._row_map: dict[int, int] = {}  # iid -> row index
         self._watching_iid: int | None = None
 
+    def _animate_empty_dots(self) -> None:
+        self._empty_dot_count = (self._empty_dot_count + 1) % 4
+        dots = "." * self._empty_dot_count
+        self._empty_label.setText(f"{self._empty_base_text}{dots}")
+
     def _update_empty_state(self) -> None:
         has_rows = self._model.rowCount() > 0
         self._empty_label.setVisible(not has_rows)
@@ -132,6 +154,9 @@ class ChannelTable(AnimatedCard):
             # Reposition label over the viewport area
             vp = self._tree.viewport()
             self._empty_label.setGeometry(vp.geometry())
+            self._empty_timer.start()
+        else:
+            self._empty_timer.stop()
 
     def eventFilter(self, obj, event):  # type: ignore[override]
         if obj is self._tree.viewport() and event.type() == QEvent.Type.Resize:
@@ -146,6 +171,47 @@ class ChannelTable(AnimatedCard):
         has_selection = bool(self._tree.selectionModel().selectedRows())
         self._switch_btn.setEnabled(has_selection)
 
+    def _show_context_menu(self, pos) -> None:
+        """Show right-click context menu on the channel table."""
+        index = self._tree.indexAt(pos)
+        if not index.isValid():
+            return
+        # Map proxy index back to source model
+        source_index = self._proxy.mapToSource(index)
+        channel = self._get_channel_at_row(source_index.row())
+        if channel is None:
+            return
+        menu = QMenu(self)
+        switch_action = menu.addAction(_("gui", "channels", "switch"))
+        switch_action.triggered.connect(self._on_switch)
+        menu.addSeparator()
+        browser_action = menu.addAction("Open in browser")
+        browser_action.triggered.connect(lambda: webopen(f"https://twitch.tv/{channel.name}"))
+        copy_action = menu.addAction("Copy channel name")
+        copy_action.triggered.connect(
+            lambda: QApplication.clipboard().setText(channel.name)
+        )
+        menu.exec(self._tree.viewport().mapToGlobal(pos))
+
+    def _get_channel_at_row(self, source_row: int) -> Channel | None:
+        """Get channel from a source model row index."""
+        item = self._model.item(source_row, 0)
+        if item is None:
+            return None
+        iid = item.data(Qt.ItemDataRole.UserRole)
+        return self._channel_map.get(iid)
+
+    @staticmethod
+    def _format_viewers(count: int | None) -> str:
+        """Format viewer count for compact display."""
+        if count is None:
+            return ""
+        if count >= 1_000_000:
+            return f"{count / 1_000_000:.1f}M"
+        if count >= 1_000:
+            return f"{count / 1_000:.1f}K"
+        return str(count)
+
     def _make_row(self, channel: Channel) -> list[QStandardItem]:
         # status
         if channel.online:
@@ -156,7 +222,7 @@ class ChannelTable(AnimatedCard):
             status = _("gui", "channels", "offline")
         game = str(channel.game or '')
         drops = "\u2714" if channel.drops_enabled else "\u274C"
-        viewers = str(channel.viewers) if channel.viewers is not None else ''
+        viewers = self._format_viewers(channel.viewers)
         acl = "\u2714" if channel.acl_based else "\u274C"
 
         items = []
@@ -165,6 +231,9 @@ class ChannelTable(AnimatedCard):
             item.setData(channel.iid, Qt.ItemDataRole.UserRole)
             if col in ("drops", "acl_base", "viewers"):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            # Store raw viewer count for proper numeric sorting
+            if col == "viewers" and channel.viewers is not None:
+                item.setData(channel.viewers, Qt.ItemDataRole.UserRole + 1)
             items.append(item)
         return items
 
@@ -235,13 +304,18 @@ class ChannelTable(AnimatedCard):
             self._watching_iid = iid
             row = self._row_map[iid]
             self._highlight_watching_row(row, True)
-            self._tree.scrollTo(self._model.index(row, 0))
+            # Map source index through proxy for scroll
+            source_idx = self._model.index(row, 0)
+            proxy_idx = self._proxy.mapFromSource(source_idx)
+            self._tree.scrollTo(proxy_idx)
 
     def get_selection(self) -> Channel | None:
         indexes = self._tree.selectionModel().selectedRows()
         if not indexes:
             return None
-        item = self._model.item(indexes[0].row(), 0)
+        # Map proxy index back to source model
+        source_index = self._proxy.mapToSource(indexes[0])
+        item = self._model.item(source_index.row(), 0)
         if item is None:
             return None
         iid = item.data(Qt.ItemDataRole.UserRole)
@@ -249,6 +323,11 @@ class ChannelTable(AnimatedCard):
 
     def clear_selection(self) -> None:
         self._tree.clearSelection()
+
+    def _refresh_watching_highlight(self) -> None:
+        """Re-apply the watching row highlight after a theme change."""
+        if self._watching_iid is not None and self._watching_iid in self._row_map:
+            self._highlight_watching_row(self._row_map[self._watching_iid], True)
 
     def shrink(self) -> None:
         # Qt handles column sizing automatically; this is a no-op compatibility method

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 
 from gui.widgets.animated_card import AnimatedCard
 from gui.widgets.toggle_switch import ToggleSwitch
+from gui.widgets.skeleton import SkeletonCard
 from gui.animations import fade_in, fade_out, StylePulseAnimator
 from translate import _
 from constants import PriorityMode
@@ -25,6 +26,18 @@ if TYPE_CHECKING:
     from cache import ImageCache
 
 
+def _make_status_pill(text: str, bg_color: str, parent: QWidget) -> QLabel:
+    """Create a small colored pill/chip label for campaign status."""
+    pill = QLabel(text, parent)
+    pill.setStyleSheet(
+        f"background: {bg_color}; color: white; border-radius: 10px;"
+        f" padding: 2px 10px; font-size: 11px; font-weight: 600;"
+    )
+    pill.setFixedHeight(20)
+    pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    return pill
+
+
 class _CampaignCard(AnimatedCard):
     """A single campaign card in the inventory grid.
 
@@ -32,9 +45,12 @@ class _CampaignCard(AnimatedCard):
     are created off-screen and then made visible at once via tab switch.
     """
 
+    MIN_CARD_WIDTH = 420
+
     def __init__(self, campaign: DropsCampaign, parent=None):
         super().__init__(parent, padding=12, shadow=False)
         self.campaign = campaign
+        self.setMinimumWidth(self.MIN_CARD_WIDTH)
 
 
 class InventoryTab(QWidget):
@@ -105,24 +121,50 @@ class InventoryTab(QWidget):
         layout.addWidget(self._scroll, 1)
 
         # Empty state overlay (shown when no campaigns are visible)
-        self._empty_label = QLabel(self._container)
-        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_label.setText(
-            f"{_('gui', 'inventory', 'empty')}\n"
-            f"{_('gui', 'inventory', 'empty_hint')}"
-        )
-        self._empty_label.setProperty("class", "muted")
-        self._empty_label.setWordWrap(True)
-        self._container_layout.insertWidget(0, self._empty_label)
+        self._empty_widget = QWidget(self._container)
+        empty_layout = QVBoxLayout(self._empty_widget)
+        empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.setSpacing(12)
+
+        empty_icon = QLabel("\U0001F4E6", self._empty_widget)
+        empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_icon.setStyleSheet("font-size: 48px; background: transparent;")
+        empty_layout.addWidget(empty_icon)
+
+        empty_title = QLabel(_("gui", "inventory", "empty"), self._empty_widget)
+        empty_title.setProperty("class", "heading")
+        empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(empty_title)
+
+        empty_hint = QLabel(_("gui", "inventory", "empty_hint"), self._empty_widget)
+        empty_hint.setProperty("class", "muted")
+        empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_hint.setWordWrap(True)
+        empty_layout.addWidget(empty_hint)
+
+        empty_action = QPushButton(_("gui", "inventory", "filter", "refresh"), self._empty_widget)
+        empty_action.setProperty("class", "accent")
+        empty_action.setFixedWidth(220)
+        empty_action.clicked.connect(self.refresh)
+        empty_layout.addWidget(empty_action, 0, Qt.AlignmentFlag.AlignCenter)
+
+        self._container_layout.insertWidget(0, self._empty_widget)
 
         self._campaigns: dict[DropsCampaign, _CampaignCard] = {}
         self._drop_labels: dict[str, QLabel] = {}
         self._pulse_animators: dict[DropsCampaign, StylePulseAnimator] = {}
+        self._skeletons: list[SkeletonCard] = []
 
     def _update_empty_state(self) -> None:
-        """Show or hide the empty state label based on visible campaign cards."""
-        any_visible = any(card.isVisible() for card in self._campaigns.values())
-        self._empty_label.setVisible(not any_visible)
+        """Show or hide the empty state based on campaign cards.
+
+        The empty state is hidden if any campaigns exist in the dict
+        (regardless of filter visibility) or if skeleton placeholders
+        are being shown.
+        """
+        has_campaigns = bool(self._campaigns)
+        has_skeletons = bool(self._skeletons)
+        self._empty_widget.setVisible(not has_campaigns and not has_skeletons)
 
     def _update_visibility(self, campaign: DropsCampaign) -> None:
         card = self._campaigns.get(campaign)
@@ -150,6 +192,7 @@ class InventoryTab(QWidget):
         card.setVisible(show)
 
     def get_status(self, campaign: DropsCampaign) -> tuple[str, str]:
+        """Return (status_text, status_color) for a campaign."""
         palette = self._manager._theme.palette
         if campaign.active:
             return (_("gui", "inventory", "status", "active"), palette.success)
@@ -163,12 +206,20 @@ class InventoryTab(QWidget):
             status_text, status_color = self.get_status(campaign)
             status_label = card.findChild(QLabel, "status_label")
             if status_label is not None:
+                # Update pill styling
                 status_label.setText(status_text)
-                status_label.setStyleSheet(f"color: {status_color}; background: transparent;")
+                status_label.setStyleSheet(
+                    f"background: {status_color}; color: white; border-radius: 10px;"
+                    f" padding: 2px 10px; font-size: 11px; font-weight: 600;"
+                )
             self._update_visibility(campaign)
         self._update_empty_state()
 
     async def add_campaign(self, campaign: DropsCampaign) -> None:
+        # Clear skeleton placeholders on first real campaign
+        if self._skeletons:
+            self._clear_skeletons()
+
         card = _CampaignCard(campaign, self._container)
         card_layout = card.card_layout
         card_layout.setSpacing(8)
@@ -201,12 +252,11 @@ class InventoryTab(QWidget):
         name_label.setWordWrap(True)
         info_layout.addWidget(name_label)
 
-        # Status
+        # Status pill
         status_text, status_color = self.get_status(campaign)
-        status_label = QLabel(status_text, card)
-        status_label.setObjectName("status_label")
-        status_label.setStyleSheet(f"color: {status_color}; background: transparent;")
-        info_layout.addWidget(status_label)
+        status_pill = _make_status_pill(status_text, status_color, card)
+        status_pill.setObjectName("status_label")
+        info_layout.addWidget(status_pill, 0, Qt.AlignmentFlag.AlignLeft)
 
         # Dates
         ends_text = _("gui", "inventory", "ends").format(
@@ -301,6 +351,19 @@ class InventoryTab(QWidget):
                 blabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 if bimg is not None:
                     blabel.setPixmap(bimg)
+                    # Claimed overlay: dim with checkmark
+                    if drop.is_claimed:
+                        blabel.setStyleSheet(
+                            "border-radius: 4px; background: transparent;"
+                        )
+                        # Overlay a semi-transparent check
+                        overlay = QLabel("\u2714", blabel)
+                        overlay.setFixedSize(64, 64)
+                        overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                        overlay.setStyleSheet(
+                            f"background: rgba(0, 0, 0, 0.5); color: {palette.success};"
+                            f" font-size: 28px; border-radius: 4px;"
+                        )
                 else:
                     # Fallback placeholder for failed image loads
                     blabel.setText("?")
@@ -315,7 +378,21 @@ class InventoryTab(QWidget):
                 bname.setMaximumWidth(120)
                 drop_vlayout.addWidget(bname)
 
-            # Progress label
+            # Mini progress bar (4px height)
+            mini_bar = QProgressBar(drop_frame)
+            mini_bar.setRange(0, 1000)
+            mini_bar.setTextVisible(False)
+            mini_bar.setFixedHeight(4)
+            mini_bar.setMaximumWidth(120)
+            if drop.is_claimed:
+                mini_bar.setValue(1000)
+            elif drop.progress > 0:
+                mini_bar.setValue(int(drop.progress * 1000))
+            else:
+                mini_bar.setValue(0)
+            drop_vlayout.addWidget(mini_bar)
+
+            # Progress label (compact text below the bar)
             progress_label = QLabel(drop_frame)
             progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._update_progress(drop, progress_label)
@@ -393,11 +470,29 @@ class InventoryTab(QWidget):
             card.deleteLater()
             self._update_empty_state()
 
+    def show_loading(self) -> None:
+        """Show skeleton placeholder cards while inventory is loading."""
+        self._clear_skeletons()
+        self._empty_widget.setVisible(False)
+        for _ in range(4):
+            skeleton = SkeletonCard(self._container, theme=self._manager._theme)
+            self._skeletons.append(skeleton)
+            idx = self._container_layout.count() - 1  # before the stretch
+            self._container_layout.insertWidget(idx, skeleton)
+
+    def _clear_skeletons(self) -> None:
+        for s in self._skeletons:
+            s.stop()
+            s.setParent(None)
+            s.deleteLater()
+        self._skeletons.clear()
+
     def clear(self) -> None:
         # Stop all pulse animations
         for pulse in self._pulse_animators.values():
             pulse.stop()
         self._pulse_animators.clear()
+        self._clear_skeletons()
         # Remove all campaign cards
         for card in self._campaigns.values():
             card.setParent(None)

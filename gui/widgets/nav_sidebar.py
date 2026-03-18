@@ -9,6 +9,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QIcon, QPainter, QPainterPath, QColor, QPaintEvent, QMouseEvent, QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy, QGraphicsOpacityEffect,
+    QFrame,
 )
 
 if TYPE_CHECKING:
@@ -30,7 +31,7 @@ class _NavButton(QWidget):
 
     ICON_SIZE = 20
     ITEM_HEIGHT = 44
-    EXPANDED_WIDTH = 180
+    EXPANDED_WIDTH = 210
     COLLAPSED_WIDTH = 52
     INDICATOR_WIDTH = 3
     INDICATOR_HEIGHT = 24
@@ -130,7 +131,7 @@ class NavSidebar(QWidget):
 
     tab_changed = Signal(int)
 
-    EXPANDED_WIDTH = 180
+    EXPANDED_WIDTH = 210
     COLLAPSED_WIDTH = 52
     ANIMATION_DURATION = 250
 
@@ -154,7 +155,8 @@ class NavSidebar(QWidget):
         self._min_width_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
         # Layout
-        layout = QVBoxLayout(self)
+        self._layout = QVBoxLayout(self)
+        layout = self._layout
         layout.setContentsMargins(0, 8, 0, 8)
         layout.setSpacing(2)
 
@@ -181,6 +183,16 @@ class NavSidebar(QWidget):
             layout.addWidget(btn)
 
         layout.addStretch(1)
+
+        # Separator before bottom section
+        self._bottom_sep = QFrame(self)
+        self._bottom_sep.setFrameShape(QFrame.Shape.HLine)
+        self._bottom_sep.setProperty("class", "separator")
+        layout.addWidget(self._bottom_sep)
+
+        # Placeholder for auxiliary widget (e.g. WebsocketPanel)
+        self._aux_widget: QWidget | None = None
+        self._aux_insert_index = layout.count()  # remember position
 
         # Collapse toggle button
         self._collapse_btn = _NavButton(NavItem(icon="\u276E", label="Collapse"), self._theme, self)
@@ -224,10 +236,34 @@ class NavSidebar(QWidget):
             btn.set_collapsed(self._collapsed)
         self._collapse_btn.set_collapsed(self._collapsed)
         self._title_label.setVisible(not self._collapsed)
+        self._bottom_sep.setVisible(not self._collapsed)
+        if self._aux_widget is not None:
+            self._aux_widget.setVisible(not self._collapsed)
         # Update collapse icon
         icon = "\u276F" if self._collapsed else "\u276E"
         self._collapse_btn._item.icon = icon
         self._collapse_btn._icon_label.setText(icon)
+
+    def set_aux_widget(self, widget: QWidget) -> None:
+        """Set an auxiliary widget displayed at the bottom of the sidebar.
+
+        Used for the WebsocketPanel so it lives in the sidebar instead of
+        the main dashboard area.
+        """
+        if self._aux_widget is not None:
+            self._layout.removeWidget(self._aux_widget)
+        self._aux_widget = widget
+        # Insert just before the collapse button
+        collapse_idx = self._layout.indexOf(self._collapse_btn)
+        self._layout.insertWidget(collapse_idx, widget)
+
+    def refresh_theme(self) -> None:
+        """Re-apply palette-derived styles after a theme change."""
+        self._title_label.setStyleSheet(
+            f"color: {self._theme.palette.accent}; background: transparent;"
+        )
+        for i, btn in enumerate(self._buttons):
+            btn.set_active(i == self._current_index)
 
     @property
     def is_collapsed(self) -> bool:

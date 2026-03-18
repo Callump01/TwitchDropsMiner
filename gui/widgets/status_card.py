@@ -60,9 +60,12 @@ class StatusCard(AnimatedCard):
         "exiting":  ("foreground_muted", False),
     }
 
+    COMPACT_HEIGHT = 64
+
     def __init__(self, manager, parent=None):
         super().__init__(parent, padding=12)
         self._theme: ThemeManager = manager._theme
+        self.setFixedHeight(self.COMPACT_HEIGHT)
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)

@@ -6,10 +6,12 @@ from PySide6.QtCore import (
     QEasingCurve,
     QParallelAnimationGroup,
     QSequentialAnimationGroup,
+    QPauseAnimation,
     QTimer,
     Property,
     QObject,
     Signal,
+    QPointF,
 )
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QWidget, QGraphicsOpacityEffect
@@ -216,3 +218,39 @@ class SmoothProgressHelper(QObject):
         self._stop_current()
         self._current = float(value)
         self.value_changed.emit(value)
+
+
+def stagger_fade_in(
+    widgets: list[QWidget],
+    duration: int = 300,
+    delay_per: int = 50,
+    parent: QObject | None = None,
+) -> QSequentialAnimationGroup:
+    """Fade in a list of widgets with staggered delays.
+
+    Each widget fades from 0 to 1 opacity with a configurable delay
+    between each successive widget.  The returned animation group
+    auto-deletes itself when finished.
+    """
+    group = QSequentialAnimationGroup(parent)
+
+    for i, widget in enumerate(widgets):
+        effect = widget.graphicsEffect()
+        if not isinstance(effect, QGraphicsOpacityEffect):
+            effect = QGraphicsOpacityEffect(widget)
+            widget.setGraphicsEffect(effect)
+        effect.setOpacity(0.0)
+        widget.setVisible(True)
+
+        if i > 0:
+            group.addAnimation(QPauseAnimation(delay_per))
+
+        anim = QPropertyAnimation(effect, b"opacity", widget)
+        anim.setDuration(duration)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        group.addAnimation(anim)
+
+    group.start(QSequentialAnimationGroup.DeletionPolicy.DeleteWhenStopped)
+    return group
